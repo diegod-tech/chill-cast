@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: chillcast-db
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: chillcast
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - chillcast
+
+  # Backend API Server
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: chillcast-api
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      NODE_ENV: development
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/chillcast?authSource=admin
+      JWT_SECRET: chill-cast-super-secret-key-change-in-production
+      CORS_ORIGIN: http://localhost:5173
+    depends_on:
+      - mongodb
+    networks:
+      - chillcast
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+
+  # Frontend Development Server
+  web:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+    container_name: chillcast-web
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:5000/api
+      VITE_SOCKET_URL: http://localhost:5000
+    depends_on:
+      - api
+    networks:
+      - chillcast
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+
+volumes:
+  mongodb_data:
+
+networks:
+  chillcast:
+    driver: bridge
