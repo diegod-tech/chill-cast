@@ -6,6 +6,18 @@ export class WebRTCManager {
   constructor() {
     this.peerConnections = new Map()
     this.dataChannels = new Map()
+    this.events = {}
+  }
+
+  on(event, listener) {
+    if (!this.events[event]) this.events[event] = []
+    this.events[event].push(listener)
+  }
+
+  emit(event, ...args) {
+    if (this.events[event]) {
+      this.events[event].forEach(listener => listener(...args))
+    }
   }
 
   /**
@@ -26,9 +38,13 @@ export class WebRTCManager {
     // Set up event handlers
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
-        // Send candidate to remote peer
-        console.log('ICE candidate generated')
+        this.emit('ice-candidate', event.candidate, peerId)
       }
+    }
+
+    peerConnection.ontrack = (event) => {
+      console.log("Creating/Receiving remote stream track")
+      this.emit('remoteStream', event.streams[0], peerId)
     }
 
     peerConnection.onconnectionstatechange = () => {
@@ -48,7 +64,7 @@ export class WebRTCManager {
         video: {
           cursor: 'always',
         },
-        audio: false,
+        audio: true,
       })
       return stream
     } catch (error) {

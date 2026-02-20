@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth } from 'firebase/auth'
+import { getAuth, GoogleAuthProvider } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { getDatabase } from 'firebase/database'
 
@@ -13,11 +13,46 @@ const firebaseConfig = {
     databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL
 }
 
-const app = initializeApp(firebaseConfig)
-export const auth = getAuth(app)
-export const db = getFirestore(app)
-export const rtdb = getDatabase(app)
-import { GoogleAuthProvider } from 'firebase/auth'
-export const googleProvider = new GoogleAuthProvider()
+let app;
+let auth;
+let db;
+let rtdb;
+let googleProvider;
 
+const isConfigured = !!firebaseConfig.apiKey;
+
+if (isConfigured) {
+    app = initializeApp(firebaseConfig)
+    auth = getAuth(app)
+    db = getFirestore(app)
+    rtdb = getDatabase(app)
+    googleProvider = new GoogleAuthProvider()
+} else {
+    console.warn('⚠️ Firebase config missing! Using mock objects to prevent crash.')
+    app = {}
+    // Mock Auth
+    auth = {
+        currentUser: null,
+        onAuthStateChanged: (cb) => { cb(null); return () => { } },
+        signInWithPopup: async () => { throw new Error('Firebase not configured') },
+        signOut: async () => { }
+    }
+    // Mock Firestore
+    const mockCollection = () => ({
+        doc: () => ({
+            get: async () => ({ exists: false, data: () => ({}) }),
+            set: async () => { },
+            update: async () => { },
+            onSnapshot: () => () => { }
+        }),
+        where: () => ({ get: async () => ({ forEach: () => { } }) }),
+        add: async () => { }
+    })
+    db = { collection: mockCollection }
+    // Mock RTDB
+    rtdb = { ref: () => ({ onValue: () => { }, set: async () => { } }) }
+    googleProvider = {}
+}
+
+export { auth, db, rtdb, googleProvider }
 export default app

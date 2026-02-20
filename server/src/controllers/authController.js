@@ -36,8 +36,9 @@ export const register = async (req, res) => {
       user: newUser
     })
   } catch (error) {
-    console.error('Register error:', error)
-    res.status(500).json({ message: 'Registration failed' })
+    console.error('Register error details:', error);
+    if (error.code) console.error('Error Code:', error.code);
+    res.status(500).json({ message: 'Registration failed', error: error.message })
   }
 }
 
@@ -121,4 +122,27 @@ export const logout = async (req, res) => {
   }
 }
 
-export default { register, login, getCurrentUser, logout }
+/**
+ * Update user profile
+ */
+export const updateUser = async (req, res) => {
+  try {
+    const { uid } = req.user
+    const { name, picture } = req.body
+
+    const userRef = db.collection('users').doc(uid)
+    await userRef.update({
+      name,
+      avatar: picture,
+      updatedAt: new Date().toISOString()
+    })
+
+    const updatedUser = await userRef.get()
+    res.json({ message: 'Profile updated', user: updatedUser.data() })
+  } catch (error) {
+    console.error('Update profile error:', error)
+    res.status(500).json({ message: 'Failed to update profile' })
+  }
+}
+
+export default { register, login, getCurrentUser, logout, updateUser }

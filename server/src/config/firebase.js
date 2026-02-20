@@ -9,6 +9,12 @@ import { config } from './env.js'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
+
+let adminConfig = {
+  credential: admin.credential.applicationDefault(),
+  databaseURL: config.FIREBASE_DATABASE_URL
+};
+
 try {
   let serviceAccount = null;
 
@@ -19,15 +25,12 @@ try {
       const fileContent = readFileSync(serviceAccountPath, 'utf8');
       serviceAccount = JSON.parse(fileContent);
       console.log('🔑 Loaded Service Account from:', serviceAccountPath);
+
+      adminConfig.credential = admin.credential.cert(serviceAccount);
     } catch (err) {
       console.warn('⚠️ Could not load service account file:', err.message);
     }
   }
-
-  const adminConfig = {
-    credential: serviceAccount ? admin.credential.cert(serviceAccount) : admin.credential.applicationDefault(),
-    databaseURL: config.FIREBASE_DATABASE_URL
-  };
 
   if (!admin.apps.length) {
     admin.initializeApp(adminConfig);
@@ -39,6 +42,6 @@ try {
 
 export const auth = admin.auth();
 export const db = admin.firestore();
-export const rtdb = admin.database();
+export const rtdb = adminConfig.databaseURL ? admin.database() : null;
 
 export default admin;

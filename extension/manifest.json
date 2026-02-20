@@ -1,0 +1,57 @@
+{
+    "manifest_version": 3,
+    "name": "Chill Cast - Netflix Sync",
+    "version": "1.0",
+    "description": "Synchronize Netflix playback with friends on Chill Cast.",
+    "permissions": [
+        "activeTab",
+        "scripting",
+        "storage"
+    ],
+    "host_permissions": [
+        "*://*.netflix.com/*",
+        "*://*.hotstar.com/*"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
+    },
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.netflix.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_end"
+        },
+        {
+            "matches": [
+                "*://*.hotstar.com/*"
+            ],
+            "js": [
+                "hotstar_content.js"
+            ],
+            "run_at": "document_end"
+        }
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "socket.io.min.js"
+            ],
+            "matches": [
+                "*://*.netflix.com/*",
+                "*://*.hotstar.com/*"
+            ]
+        }
+    ]
+}

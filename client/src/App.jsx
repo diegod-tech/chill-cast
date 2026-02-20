@@ -2,6 +2,9 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { useEffect } from 'react'
 import { useAuthStore } from './utils/store'
 import Layout from './components/Layout'
+import ConfigWarning from './components/ConfigWarning'
+import api from './utils/api'
+
 
 // Pages
 import LandingPage from './pages/LandingPage'
@@ -24,20 +27,40 @@ function ProtectedRoute({ children }) {
 function LayoutWrapper({ children }) {
   const location = useLocation()
   const isPublic = ['/', '/login', '/register'].includes(location.pathname)
-  
+
   return isPublic ? children : <Layout>{children}</Layout>
 }
 
+
 function App() {
-  const { token, setToken } = useAuthStore()
+  const { token, setToken, user, setUser } = useAuthStore()
 
   useEffect(() => {
-    // Check for stored token on mount
-    const storedToken = localStorage.getItem('authToken')
-    if (storedToken && !token) {
-      setToken(storedToken)
+    const initAuth = async () => {
+      const storedToken = localStorage.getItem('authToken')
+      if (storedToken) {
+        if (!token) setToken(storedToken)
+
+        if (!user) {
+          try {
+            // Set token in header explicitly if needed, but api instance usually handles it
+            // if api.js uses localStorage it's fine. If it uses store, we just setToken.
+            // Let's assume api.js handles it or we rely on the interceptor.
+            const response = await api.get('/auth/me')
+            setUser(response.data)
+          } catch (error) {
+            console.error('Failed to restore session:', error)
+            if (error.response?.status === 401) {
+              localStorage.removeItem('authToken')
+              setToken(null)
+            }
+          }
+        }
+      }
     }
-  }, [token, setToken])
+
+    initAuth()
+  }, [token, setToken, user, setUser])
 
   return (
     <Router>
@@ -102,7 +125,9 @@ function App() {
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </LayoutWrapper>
+      <ConfigWarning />
     </Router>
+
   )
 }
 

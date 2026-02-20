@@ -39,11 +39,16 @@ export const createRoom = async (req, res) => {
     }
 
     await roomRef.set(newRoom)
+    console.log(`[Room Created] ID: ${roomId}, Host: ${uid}, Name: ${name}`)
 
     res.status(201).json(newRoom)
   } catch (error) {
-    console.error('Create room error:', error)
-    res.status(500).json({ message: 'Failed to create room' })
+    console.error('Create room error details:', error)
+    if (error.code) console.error('Firestore Error Code:', error.code)
+    res.status(500).json({
+      message: 'Failed to create room',
+      error: error.message
+    })
   }
 }
 

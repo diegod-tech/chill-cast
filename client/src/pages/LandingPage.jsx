@@ -4,8 +4,8 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-dark overflow-hidden">
       {/* Navigation */}
-      <nav className="fixed top-0 w-full z-50 glass-effect border-b border-primary-500 border-opacity-20">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+      <nav className="fixed top-0 w-full z-50 glass-effect border-b border-primary-500 border-opacity-20" style={{ maxWidth: 'none', padding: 0 }}>
+        <div className="w-full px-8 py-4 flex justify-between items-center" style={{ maxWidth: 'none', margin: 0 }}>
           <div className="flex items-center gap-2">
             <Zap className="w-8 h-8 text-accent-500" />
             <span className="text-2xl font-bold">Chill Cast</span>

@@ -15,5 +15,6 @@ router.post('/login', verifyToken, authController.login)
  */
 router.get('/me', verifyToken, authController.getCurrentUser)
 router.post('/logout', verifyToken, authController.logout)
+router.put('/update', verifyToken, authController.updateUser)
 
 export default router

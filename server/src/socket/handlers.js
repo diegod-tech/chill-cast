@@ -21,7 +21,7 @@ export const initializeSocket = (io) => {
       }
       next()
     } catch (error) {
-      // Allow anonymous/guest if needed, but for now strict
+      console.error('Socket Auth failed:', error.code)
       return next(new Error('Invalid token'))
     }
   })
@@ -46,34 +46,44 @@ export const initializeSocket = (io) => {
           return;
         }
 
-        // Add user to participants list in Firestore
-        // Note: Ideally efficient to use a subcollection for scalable participants
-        // But for small rooms, arrayUnion is okay
-        const participant = {
-          userId: uid,
-          name: name,
-          avatar: picture || '',
-          joinedAt: new Date().toISOString()
+        const roomData = roomDoc.data();
+        const existingParticipants = roomData.participants || [];
+        const isAlreadyInRoom = existingParticipants.some(p => p.userId === uid);
+
+        if (!isAlreadyInRoom) {
+          const participant = {
+            userId: uid,
+            name: name,
+            avatar: picture || '',
+            joinedAt: new Date().toISOString()
+          }
+
+          await roomRef.update({
+            participants: FieldValue.arrayUnion(participant)
+          })
+
+          // Broadcast to others
+          socket.to(roomId).emit('userJoined', {
+            userId: uid,
+            name: name,
+            avatar: picture,
+            message: `${name} joined the room`
+          })
+
+          // Send room state to user with new participant included
+          socket.emit('roomJoined', {
+            roomId,
+            room: roomData,
+            participants: [...existingParticipants, participant]
+          })
+        } else {
+          // User already in room, just send state
+          socket.emit('roomJoined', {
+            roomId,
+            room: roomData,
+            participants: existingParticipants
+          })
         }
-
-        await roomRef.update({
-          participants: FieldValue.arrayUnion(participant)
-        })
-
-        // Broadcast to others
-        socket.to(roomId).emit('userJoined', {
-          userId: uid,
-          name: name,
-          avatar: picture,
-          message: `${name} joined the room`
-        })
-
-        // Send room state to user
-        socket.emit('roomJoined', {
-          roomId,
-          room: roomDoc.data(),
-          participants: [...(roomDoc.data().participants || []), participant]
-        })
 
       } catch (error) {
         console.error('Join room error:', error)
@@ -118,6 +128,20 @@ export const initializeSocket = (io) => {
       // Broadcast to all users in room (including sender if needed, but usually sender updates locally)
       // Excluding sender to prevent loop if client implementation requires
       socket.to(roomId).emit('playbackSync', state)
+    })
+
+    /**
+     * Netflix Sync (Extension)
+     */
+    socket.on('netflix_sync', (data) => {
+      const { roomId, action, time } = data
+      // Broadcast to others in the room
+      socket.to(roomId).emit('netflix_sync', {
+        action,
+        time,
+        userId: uid,
+        userName: name
+      })
     })
 
     /**
