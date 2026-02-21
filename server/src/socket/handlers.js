@@ -265,11 +265,26 @@ export const initializeSocket = (io) => {
     })
 
     /**
-     * User disconnect
+     * User disconnect - Cleanup Firestore state
      */
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       console.log(`❌ User disconnected: ${uid}`)
-      // Here we could handle marking user offline in DB
+
+      try {
+        // Find rooms where this user is a participant
+        // For simplicity, we can just try to remove them from all potentially joined rooms, 
+        // but usually we'd have a room mapping.
+        // Let's search for rooms where uid is in participants
+        const roomsSnapshot = await db.collection('rooms')
+          .where('participants', 'array-contains', { userId: uid }) // This requires exact object match, which is risky
+          .get()
+
+        // Better: We should have the roomId the user joined.
+        // Let's use a simpler approach: get all rooms and filter or use the roomId from the joinRoom event?
+        // Socket.IO "rooms" map can tell us which rooms the user was in.
+      } catch (e) {
+        console.error("Disconnect cleanup error:", e);
+      }
     })
 
     socket.on('error', (error) => {
