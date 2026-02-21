@@ -28,7 +28,6 @@ export default function WatchRoomPage() {
     currentTime: 0,
     duration: 0,
     service: 'youtube',
-    service: 'youtube',
     videoId: null
   })
   const [isScreenSharing, setIsScreenSharing] = useState(false)
