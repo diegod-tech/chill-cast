@@ -207,29 +207,15 @@ export const initializeSocket = (io) => {
       const { roomId } = data
       // Broadcast to room that this user is presenting
       io.to(roomId).emit('screenShareStarted', {
-        presenterId: uid,
+        senderUserId: uid,
         presenterName: name
       })
     })
 
-    /**
-     * WebRTC Offer
-     * Payload: { targetUserId, offer, roomId }
-     */
-    socket.on('offer', (data) => {
-      const { targetUserId, offer } = data;
-      // Emit to specific user if possible, or broadcast to room with target check on client
-      // Socket.IO doesn't easily map uid to socketId without a map.
-      // For simplicity, broadcast to room, client filters by targetUserId.
-      // Better: join a room per user ID (socket.join(uid))
-    });
-    // Let's implement socket.join(uid) on connection
-    socket.join(uid);
-
     socket.on('webrtc_offer', (data) => {
       const { targetUserId, offer, roomId } = data;
       io.to(targetUserId).emit('webrtc_offer', {
-        senderId: uid,
+        senderUserId: uid,
         offer
       })
     })
@@ -237,7 +223,7 @@ export const initializeSocket = (io) => {
     socket.on('webrtc_answer', (data) => {
       const { targetUserId, answer, roomId } = data;
       io.to(targetUserId).emit('webrtc_answer', {
-        senderId: uid,
+        senderUserId: uid,
         answer
       })
     })
@@ -245,7 +231,7 @@ export const initializeSocket = (io) => {
     socket.on('webrtc_ice_candidate', (data) => {
       const { targetUserId, candidate, roomId } = data;
       io.to(targetUserId).emit('webrtc_ice_candidate', {
-        senderId: uid,
+        senderUserId: uid,
         candidate
       })
     })
@@ -253,7 +239,7 @@ export const initializeSocket = (io) => {
     socket.on('stopScreenShare', (data) => {
       const { roomId } = data
       io.to(roomId).emit('screenShareStopped', {
-        presenterId: uid,
+        senderUserId: uid,
       })
     })
 

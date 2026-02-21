@@ -136,18 +136,15 @@ export default function WatchRoomPage() {
         if (!webrtcRef.current) return;
         console.log('Received ICE candidate from', senderUserId)
         try {
-          await webrtcRef.current.handleIceCandidate(senderUserId, candidate)
+          await webrtcRef.current.addICECandidate(senderUserId, candidate)
         } catch (e) { console.error(e) }
       })
 
       socketRef.current.on('screenShareStarted', ({ senderUserId }) => {
         console.log(`User ${senderUserId} started screen sharing.`)
-        // Optionally, prompt user to accept screen share or automatically connect
-        // For now, we'll assume auto-connect if we're not the sharer
-        if (senderUserId !== user.uid) {
-          // Request stream from sharer
-          socketRef.current.emit('requestScreenShareStream', { targetUserId: senderUserId, roomId })
-        }
+        // In a real P2P mesh, we'd wait for an offer from the sharer
+        // or the sharer would initiate connections to everyone.
+        setIsScreenSharing(false) // We are the receiver
       })
 
       socketRef.current.on('screenShareStopped', ({ senderUserId }) => {
@@ -158,12 +155,20 @@ export default function WatchRoomPage() {
           videoRef.current.srcObject = null
         }
         setRemoteStream(null)
-        setIsScreenSharing(false) // If we were sharing, this would be false already
+        setIsScreenSharing(false)
       })
 
       webrtcRef.current.on('remoteStream', (stream) => {
         console.log('Received remote stream!')
         setRemoteStream(stream)
+      })
+
+      webrtcRef.current.on('ice-candidate', (candidate, peerId) => {
+        socketRef.current.emit('webrtc_ice_candidate', {
+          targetUserId: peerId,
+          candidate,
+          roomId
+        })
       })
     }
 
@@ -239,26 +244,13 @@ export default function WatchRoomPage() {
         // Notify room
         socketRef.current.emit('requestScreenShare', { roomId })
 
-        // Create offers for all participants (naively for now, better to wait for them to request)
-        // Or better: In a mesh, we initiate connection to existing peers
-        // For simplicity: We wait for a "who is there" or just iterate known participants
+        // Mesh networking: Host (sharer) initiates connection to every participant
         participants.forEach(async (p) => {
           if (p.userId === user.uid) return
-          // Guard against null webrtcRef in async loop
           if (!webrtcRef.current) return;
 
           const pc = await webrtcRef.current.createPeerConnection(p.userId)
           stream.getTracks().forEach(track => pc.addTrack(track, stream))
-
-          pc.onicecandidate = (event) => {
-            if (event.candidate) {
-              socketRef.current.emit('webrtc_ice_candidate', {
-                targetUserId: p.userId,
-                candidate: event.candidate,
-                roomId
-              })
-            }
-          }
 
           const offer = await webrtcRef.current.createOffer(p.userId)
           socketRef.current.emit('webrtc_offer', {
@@ -271,10 +263,27 @@ export default function WatchRoomPage() {
         // Local preview
         setRemoteStream(stream)
 
+        // Stop sharing if stream ends (e.g. user clicks browser "Stop sharing" button)
+        stream.oninactive = () => {
+          if (isScreenSharing) handleScreenShare()
+        }
+
       } catch (error) {
         console.error("Screen share failed", error)
+        setIsScreenSharing(false)
       }
     }
+  }
+
+  const handleTogglePlayback = () => {
+    if (room?.hostId !== user?.uid) return
+    const newState = {
+      ...playbackState,
+      isPlaying: !playbackState.isPlaying,
+      currentTime: videoRef.current ? videoRef.current.currentTime : playbackState.currentTime
+    }
+    setLocalPlaybackState(newState)
+    socketRef.current.emit('syncPlayback', { roomId, state: newState })
   }
 
   const updateService = (service) => {
@@ -358,7 +367,7 @@ export default function WatchRoomPage() {
                         <iframe
                           width="100%"
                           height="100%"
-                          src={`https://www.youtube.com/embed/${playbackState.videoId}`}
+                          src={`https://www.youtube.com/embed/${playbackState.videoId}?autoplay=${playbackState.isPlaying ? 1 : 0}&start=${Math.floor(playbackState.currentTime)}`}
                           title="Video Player"
                           frameBorder="0"
                           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -405,6 +414,7 @@ export default function WatchRoomPage() {
                   <div className="flex items-center justify-between">
                     <div className="flex gap-2">
                       <button
+                        onClick={handleTogglePlayback}
                         className={`p-2 rounded transition ${room?.hostId === user?.uid ? 'hover:bg-dark-tertiary' : 'opacity-50 cursor-not-allowed'}`}
                         disabled={room?.hostId !== user?.uid}
                       >
