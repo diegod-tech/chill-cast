@@ -27,8 +27,7 @@ function connectToRoom(roomId) {
     }
 
     // Connect to the Chill Cast server
-    // Assuming localhost for now, user might need to configure this
-    socket = io("http://localhost:5000");
+    socket = io("https://chill-cast-backend.onrender.com");
 
     socket.on("connect", () => {
         console.log("Connected to Chill Cast server");

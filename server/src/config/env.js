@@ -11,6 +11,7 @@ export const config = {
     : 'http://localhost:5173',
   FIREBASE_DATABASE_URL: process.env.FIREBASE_DATABASE_URL,
   FIREBASE_SERVICE_ACCOUNT_PATH: process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+  FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT,
 }
 
 export default config

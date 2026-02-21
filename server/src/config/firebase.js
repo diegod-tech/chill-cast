@@ -18,14 +18,25 @@ let adminConfig = {
 try {
   let serviceAccount = null;
 
-  if (config.FIREBASE_SERVICE_ACCOUNT_PATH) {
+  if (config.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      if (typeof config.FIREBASE_SERVICE_ACCOUNT === 'string') {
+        serviceAccount = JSON.parse(config.FIREBASE_SERVICE_ACCOUNT);
+      } else {
+        serviceAccount = config.FIREBASE_SERVICE_ACCOUNT;
+      }
+      console.log('🔑 Loaded Service Account from raw JSON');
+      adminConfig.credential = admin.credential.cert(serviceAccount);
+    } catch (err) {
+      console.warn('⚠️ Could not parse raw service account JSON:', err.message);
+    }
+  } else if (config.FIREBASE_SERVICE_ACCOUNT_PATH) {
     try {
       // Resolve path relative to project root (where package.json is)
       const serviceAccountPath = join(process.cwd(), config.FIREBASE_SERVICE_ACCOUNT_PATH);
       const fileContent = readFileSync(serviceAccountPath, 'utf8');
       serviceAccount = JSON.parse(fileContent);
       console.log('🔑 Loaded Service Account from:', serviceAccountPath);
-
       adminConfig.credential = admin.credential.cert(serviceAccount);
     } catch (err) {
       console.warn('⚠️ Could not load service account file:', err.message);
