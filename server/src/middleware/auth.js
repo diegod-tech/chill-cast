@@ -59,21 +59,11 @@ export const verifyToken = async (req, res, next) => {
       }
     }
 
-    console.error('Token verification failed:', error)
-
-    // Original fallback logic (Mock user) - Only if decode fails
-    // if (isDev) {
-    //   console.warn('⚠️ Fully failing back to MOCK USER');
-    //   req.user = {
-    //     uid: 'dev-user-123',
-    //     email: 'dev@example.com',
-    //     name: 'Dev User',
-    //     picture: ''
-    //   };
-    //   return next();
-    // }
-
-    res.status(401).json({ message: 'Invalid token' })
+    console.error('Token verification failed:', error.code, error.message)
+    res.status(401).json({
+      message: 'Invalid token',
+      code: error.code || 'unknown'
+    })
   }
 }
 
