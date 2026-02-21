@@ -111,33 +111,39 @@ export default function WatchRoomPage() {
 
       socketRef.current.on('webrtc_offer', async ({ senderUserId, offer }) => {
         if (!webrtcRef.current) return;
-        console.log('Received offer from', senderUserId)
+        console.log(`🤝 WEBRTC: Received offer from ${senderUserId}`)
         try {
           const answer = await webrtcRef.current.handleOffer(senderUserId, offer)
+          console.log(`🤝 WEBRTC: Sending answer to ${senderUserId}`)
           socketRef.current.emit('webrtc_answer', {
             targetUserId: senderUserId,
             answer,
             roomId
           })
         } catch (e) {
-          console.error("WebRTC Offer Error:", e)
+          console.error("❌ WEBRTC Offer Error:", e)
         }
       })
 
       socketRef.current.on('webrtc_answer', async ({ senderUserId, answer }) => {
         if (!webrtcRef.current) return;
-        console.log('Received answer from', senderUserId)
+        console.log(`🤝 WEBRTC: Received answer from ${senderUserId}`)
         try {
           await webrtcRef.current.handleAnswer(senderUserId, answer)
-        } catch (e) { console.error(e) }
+          console.log(`🤝 WEBRTC: Connection state with ${senderUserId} updated after answer`)
+        } catch (e) {
+          console.error("❌ WEBRTC Answer Error:", e)
+        }
       })
 
       socketRef.current.on('webrtc_ice_candidate', async ({ senderUserId, candidate }) => {
         if (!webrtcRef.current) return;
-        console.log('Received ICE candidate from', senderUserId)
+        console.log(`🤝 WEBRTC: Received ICE candidate from ${senderUserId}`)
         try {
           await webrtcRef.current.addICECandidate(senderUserId, candidate)
-        } catch (e) { console.error(e) }
+        } catch (e) {
+          console.error("❌ WEBRTC ICE Error:", e)
+        }
       })
 
       socketRef.current.on('screenShareStarted', ({ senderUserId }) => {
@@ -152,12 +158,13 @@ export default function WatchRoomPage() {
         setIsScreenSharing(false)
       })
 
-      webrtcRef.current.on('remoteStream', (stream) => {
-        console.log('Received remote stream!')
+      webrtcRef.current.on('remoteStream', (stream, peerId) => {
+        console.log(`🎥 WEBRTC: Received remote stream from ${peerId}`)
         setRemoteStream(stream)
       })
 
       webrtcRef.current.on('ice-candidate', (candidate, peerId) => {
+        console.log(`🤝 WEBRTC: Sending ICE candidate to ${peerId}`)
         socketRef.current.emit('webrtc_ice_candidate', {
           targetUserId: peerId,
           candidate,
@@ -175,11 +182,14 @@ export default function WatchRoomPage() {
     }
   }, [roomId, user?.uid, setRoom, setParticipants, setLocalPlaybackState]) // Removed remoteStream
 
-  // Handle new participants joining while sharing
+  // 3. Proactive Share Logic - Only for the Host
   useEffect(() => {
     if (isScreenSharing && room?.hostId === user?.uid && participants.length > 1) {
       const stream = localStreamRef.current;
-      if (!stream) return;
+      if (!stream) {
+        console.log("⚠️ WEBRTC: isScreenSharing is true but no localStream available for proactive share");
+        return;
+      }
 
       participants.forEach(async (p) => {
         if (p.userId === user.uid) return
@@ -187,16 +197,20 @@ export default function WatchRoomPage() {
 
         // Only create offer if not already connected
         if (!webrtcRef.current.peerConnections.has(p.userId)) {
-          console.log("Found new participant to share with:", p.name);
-          const pc = await webrtcRef.current.createPeerConnection(p.userId)
-          stream.getTracks().forEach(track => pc.addTrack(track, stream))
+          console.log(`🤝 WEBRTC: Proactively offering share to new participant: ${p.name}`);
+          try {
+            const pc = await webrtcRef.current.createPeerConnection(p.userId)
+            stream.getTracks().forEach(track => pc.addTrack(track, stream))
 
-          const offer = await webrtcRef.current.createOffer(p.userId)
-          socketRef.current.emit('webrtc_offer', {
-            targetUserId: p.userId,
-            offer,
-            roomId
-          })
+            const offer = await webrtcRef.current.createOffer(p.userId)
+            socketRef.current.emit('webrtc_offer', {
+              targetUserId: p.userId,
+              offer,
+              roomId
+            })
+          } catch (err) {
+            console.error(`❌ WEBRTC: Failed to send proactive offer to ${p.name}`, err)
+          }
         }
       })
     }
@@ -234,7 +248,20 @@ export default function WatchRoomPage() {
         })
       }
     }
-  }, [remoteStream])
+  }, [remoteStream, playbackState?.service])
+
+  // Cleanup stale WebRTC connections when participants leave
+  useEffect(() => {
+    if (participants && webrtcRef.current) {
+      const currentUids = new Set(participants.map(p => p.userId))
+      for (const peerId of webrtcRef.current.peerConnections.keys()) {
+        if (!currentUids.has(peerId) && peerId !== user?.uid) {
+          console.log(`🧹 WEBRTC: Cleaning up stale connection for ${peerId}`)
+          webrtcRef.current.closePeerConnection(peerId)
+        }
+      }
+    }
+  }, [participants, user?.uid])
 
   const handleSendMessage = async (e) => {
     e.preventDefault()

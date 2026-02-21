@@ -35,26 +35,34 @@ export class WebRTCManager {
       ],
     })
 
-    // Set up event handlers
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log(`[PC] Generated ICE candidate for ${peerId}`)
         this.emit('ice-candidate', event.candidate, peerId)
       }
     }
 
     peerConnection.ontrack = (event) => {
-      console.log("🎥 Received track for peer:", peerId)
+      console.log(`[PC] 🎥 Received track from ${peerId} (type: ${event.track.kind})`)
       if (event.streams && event.streams[0]) {
         this.emit('remoteStream', event.streams[0], peerId)
       } else {
-        // Fallback for some browsers/situations where stream isn't bundled
+        console.log(`[PC] ⚠️ No stream bundled, creating fallback for ${peerId}`)
         const stream = new MediaStream([event.track])
         this.emit('remoteStream', stream, peerId)
       }
     }
 
     peerConnection.onconnectionstatechange = () => {
-      console.log(`Connection state with ${peerId}:`, peerConnection.connectionState)
+      console.log(`[PC] 🌐 Connection state with ${peerId}: ${peerConnection.connectionState}`)
+    }
+
+    peerConnection.oniceconnectionstatechange = () => {
+      console.log(`[PC] 🧊 ICE connection state with ${peerId}: ${peerConnection.iceConnectionState}`)
+    }
+
+    peerConnection.onsignalingstatechange = () => {
+      console.log(`[PC] 🚥 Signaling state with ${peerId}: ${peerConnection.signalingState}`)
     }
 
     this.peerConnections.set(peerId, peerConnection)
