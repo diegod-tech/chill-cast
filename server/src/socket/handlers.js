@@ -198,13 +198,24 @@ export const initializeSocket = (io) => {
       })
     })
 
-    // --- WebRTC Signaling ---
+    // Every user joins their own private room for direct signaling (1-to-1 WebRTC)
+    socket.join(uid);
 
     /**
      * Request screen share - Notify others that I want to share
      */
-    socket.on('requestScreenShare', (data) => {
+    socket.on('requestScreenShare', async (data) => {
       const { roomId } = data
+
+      try {
+        await db.collection('rooms').doc(roomId).update({
+          isScreenSharing: true,
+          presenterId: uid
+        });
+      } catch (e) {
+        console.error("Failed to update screen share state in DB", e);
+      }
+
       // Broadcast to room that this user is presenting
       io.to(roomId).emit('screenShareStarted', {
         senderUserId: uid,
@@ -236,8 +247,18 @@ export const initializeSocket = (io) => {
       })
     })
 
-    socket.on('stopScreenShare', (data) => {
+    socket.on('stopScreenShare', async (data) => {
       const { roomId } = data
+
+      try {
+        await db.collection('rooms').doc(roomId).update({
+          isScreenSharing: false,
+          presenterId: null
+        });
+      } catch (e) {
+        console.error("Failed to clear screen share state in DB", e);
+      }
+
       io.to(roomId).emit('screenShareStopped', {
         senderUserId: uid,
       })

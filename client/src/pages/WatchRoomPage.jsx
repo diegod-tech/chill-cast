@@ -39,6 +39,7 @@ export default function WatchRoomPage() {
   const webrtcRef = useRef(null)
   const videoRef = useRef(null)
   const messagesEndRef = useRef(null)
+  const localStreamRef = useRef(null) // NEW: Store local share stream
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -142,8 +143,6 @@ export default function WatchRoomPage() {
 
       socketRef.current.on('screenShareStarted', ({ senderUserId }) => {
         console.log(`User ${senderUserId} started screen sharing.`)
-        // In a real P2P mesh, we'd wait for an offer from the sharer
-        // or the sharer would initiate connections to everyone.
         setIsScreenSharing(false) // We are the receiver
       })
 
@@ -180,6 +179,33 @@ export default function WatchRoomPage() {
       }
     }
   }, [roomId, user?.uid, setRoom, setParticipants, setLocalPlaybackState, remoteStream])
+
+  // Handle new participants joining while sharing
+  useEffect(() => {
+    if (isScreenSharing && room?.hostId === user?.uid && participants.length > 1) {
+      const stream = localStreamRef.current;
+      if (!stream) return;
+
+      participants.forEach(async (p) => {
+        if (p.userId === user.uid) return
+        if (!webrtcRef.current) return;
+
+        // Only create offer if not already connected
+        if (!webrtcRef.current.peerConnections.has(p.userId)) {
+          console.log("Found new participant to share with:", p.name);
+          const pc = await webrtcRef.current.createPeerConnection(p.userId)
+          stream.getTracks().forEach(track => pc.addTrack(track, stream))
+
+          const offer = await webrtcRef.current.createOffer(p.userId)
+          socketRef.current.emit('webrtc_offer', {
+            targetUserId: p.userId,
+            offer,
+            roomId
+          })
+        }
+      })
+    }
+  }, [participants, isScreenSharing, room?.hostId, user?.uid, roomId])
 
   // Firestore Chat Listener
   useEffect(() => {
@@ -234,17 +260,19 @@ export default function WatchRoomPage() {
       socketRef.current.emit('stopScreenShare', { roomId })
       setIsScreenSharing(false)
       setRemoteStream(null)
+      localStreamRef.current = null
     } else {
       // Start sharing
       try {
         if (!webrtcRef.current) return;
         const stream = await webrtcRef.current.getScreenStream()
+        localStreamRef.current = stream
         setIsScreenSharing(true)
 
         // Notify room
         socketRef.current.emit('requestScreenShare', { roomId })
 
-        // Mesh networking: Host (sharer) initiates connection to every participant
+        // Initial connections to everyone present
         participants.forEach(async (p) => {
           if (p.userId === user.uid) return
           if (!webrtcRef.current) return;
@@ -263,14 +291,17 @@ export default function WatchRoomPage() {
         // Local preview
         setRemoteStream(stream)
 
-        // Stop sharing if stream ends (e.g. user clicks browser "Stop sharing" button)
-        stream.oninactive = () => {
-          if (isScreenSharing) handleScreenShare()
+        // Stop sharing if stream ends
+        stream.getTracks()[0].onended = () => {
+          if (localStreamRef.current) {
+            handleScreenShare()
+          }
         }
 
       } catch (error) {
         console.error("Screen share failed", error)
         setIsScreenSharing(false)
+        localStreamRef.current = null
       }
     }
   }
