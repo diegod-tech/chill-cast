@@ -274,6 +274,9 @@ export default function WatchRoomPage() {
         localStreamRef.current = stream
         setIsScreenSharing(true)
 
+        // Switch room service to screenshare so everyone sees it
+        updateService('screenshare');
+
         // Notify room
         socketRef.current.emit('requestScreenShare', { roomId })
 
@@ -433,42 +436,45 @@ export default function WatchRoomPage() {
                   )}
                 </div>
 
-                {/* Streaming Buttons Logic - Host Only - Non-hosts see nothing */}
-                {room?.hostId === user?.uid && (
-                  <div className="flex flex-col gap-4 p-4 bg-dark-tertiary">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-xs font-bold text-accent-400 uppercase tracking-wider">Host Controls</span>
-                    </div>
-                    <div className="flex gap-4">
-                      <button onClick={() => updateService('youtube')} className={`px-4 py-1 rounded transition ${playbackState.service === 'youtube' ? 'bg-red-600' : 'bg-gray-700 hover:bg-gray-600'}`}>YouTube</button>
-                      <button onClick={() => updateService('netflix')} className={`px-4 py-1 rounded transition ${playbackState.service === 'netflix' ? 'bg-red-800' : 'bg-gray-700 hover:bg-gray-600'}`}>Netflix</button>
-                      <button onClick={() => updateService('hotstar')} className={`px-4 py-1 rounded transition ${playbackState.service === 'hotstar' ? 'bg-[#1347BD]' : 'bg-gray-700 hover:bg-gray-600'}`}>Disney+ Hotstar</button>
-                      <button
-                        onClick={() => {
-                          updateService('screenshare');
-                          if (!isScreenSharing) handleScreenShare();
-                        }}
-                        className={`px-4 py-1 rounded transition flex items-center gap-2 ${playbackState.service === 'screenshare' ? 'bg-primary-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-                      >
-                        <Monitor className="w-4 h-4" />
-                        Screen Share
-                      </button>
-                    </div>
-
-                    {playbackState.service === 'youtube' && (
-                      <form onSubmit={handleVideoChange} className="flex gap-2">
-                        <input
-                          type="text"
-                          placeholder="Paste YouTube Link..."
-                          className="flex-1 px-3 py-1 bg-dark rounded border border-gray-600 text-sm focus:outline-none focus:border-red-500"
-                          value={videoUrlInput}
-                          onChange={(e) => setVideoUrlInput(e.target.value)}
-                        />
-                        <button type="submit" className="px-3 py-1 bg-red-600 rounded text-sm hover:bg-red-700">Load</button>
-                      </form>
+                {/* Room/Service Controls - Visible to Everyone */}
+                <div className="flex flex-col gap-4 p-4 bg-dark-tertiary">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-xs font-bold text-accent-400 uppercase tracking-wider">
+                      {room?.hostId === user?.uid ? 'Host Controls' : 'Room Controls'}
+                    </span>
+                    {room?.isScreenSharing && (
+                      <span className="flex items-center gap-1 text-[10px] bg-red-500/20 text-red-500 px-2 py-0.5 rounded-full animate-pulse border border-red-500/30">
+                        <Monitor className="w-3 h-3" /> LIVE SHARE
+                      </span>
                     )}
                   </div>
-                )}
+                  <div className="flex gap-4">
+                    <button onClick={() => updateService('youtube')} className={`px-4 py-1 rounded transition text-sm font-semibold ${playbackState.service === 'youtube' ? 'bg-red-600' : 'bg-gray-700 hover:bg-gray-600'}`}>YouTube</button>
+                    <button onClick={() => updateService('netflix')} className={`px-4 py-1 rounded transition text-sm font-semibold ${playbackState.service === 'netflix' ? 'bg-red-800' : 'bg-gray-700 hover:bg-gray-600'}`}>Netflix</button>
+                    <button onClick={() => updateService('hotstar')} className={`px-4 py-1 rounded transition text-sm font-semibold ${playbackState.service === 'hotstar' ? 'bg-[#1347BD]' : 'bg-gray-700 hover:bg-gray-600'}`}>Disney+ Hotstar</button>
+                    <button
+                      onClick={() => updateService('screenshare')}
+                      className={`px-4 py-1 rounded transition flex items-center gap-2 text-sm font-semibold ${playbackState.service === 'screenshare' ? 'bg-primary-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                    >
+                      <Monitor className="w-4 h-4" />
+                      Screen Share
+                    </button>
+                  </div>
+
+                  {/* YouTube URL Input - Host Only */}
+                  {room?.hostId === user?.uid && playbackState.service === 'youtube' && (
+                    <form onSubmit={handleVideoChange} className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Paste YouTube Link..."
+                        className="flex-1 px-3 py-1 bg-dark rounded border border-gray-600 text-sm focus:outline-none focus:border-red-500"
+                        value={videoUrlInput}
+                        onChange={(e) => setVideoUrlInput(e.target.value)}
+                      />
+                      <button type="submit" className="px-3 py-1 bg-red-600 rounded text-sm hover:bg-red-700">Load</button>
+                    </form>
+                  )}
+                </div>
 
                 <div className="p-4 space-y-3">
                   <div className="flex items-center justify-between">
