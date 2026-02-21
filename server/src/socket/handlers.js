@@ -29,12 +29,43 @@ export const initializeSocket = (io) => {
   io.on('connection', async (socket) => {
     console.log(`✅ User connected: ${socket.user.uid} (${socket.id})`)
     const { uid, name, picture } = socket.user
+    let userRoomId = null;
+
+    const handleRoomCleanup = async () => {
+      if (!userRoomId) return
+      const roomId = userRoomId
+
+      try {
+        const roomRef = db.collection('rooms').doc(roomId)
+        const roomDoc = await roomRef.get()
+
+        if (roomDoc.exists) {
+          const roomData = roomDoc.data()
+          const participants = roomData.participants || []
+          const updatedParticipants = participants.filter(p => p.userId !== uid)
+
+          const updates = { participants: updatedParticipants }
+
+          if (roomData.presenterId === uid) {
+            updates.isScreenSharing = false
+            updates.presenterId = null
+            io.to(roomId).emit('screenShareStopped', { senderUserId: uid })
+          }
+
+          await roomRef.update(updates)
+          io.to(roomId).emit('updateParticipants', updatedParticipants)
+        }
+      } catch (err) {
+        console.error('Room cleanup error:', err)
+      }
+    }
 
     /**
      * Join a room
      */
     socket.on('joinRoom', async (data) => {
       const { roomId } = data
+      userRoomId = roomId;
       socket.join(roomId)
 
       try {
@@ -94,17 +125,12 @@ export const initializeSocket = (io) => {
     /**
      * Leave a room
      */
-    socket.on('leaveRoom', async (data) => {
-      const { roomId } = data
-      socket.leave(roomId)
-
-      // Remove from Firestore (complex with arrayRemove needing exact object, 
-      // simplified here by assuming client handles disconnection logic or we do a periodic cleanup)
-      // For now, just notify
-      io.to(roomId).emit('userLeft', {
-        userId: uid,
-        message: `${name} left the room`
-      })
+    socket.on('leaveRoom', async () => {
+      await handleRoomCleanup()
+      if (userRoomId) {
+        socket.leave(userRoomId)
+        userRoomId = null
+      }
     })
 
     /**
@@ -269,22 +295,7 @@ export const initializeSocket = (io) => {
      */
     socket.on('disconnect', async () => {
       console.log(`❌ User disconnected: ${uid}`)
-
-      try {
-        // Find rooms where this user is a participant
-        // For simplicity, we can just try to remove them from all potentially joined rooms, 
-        // but usually we'd have a room mapping.
-        // Let's search for rooms where uid is in participants
-        const roomsSnapshot = await db.collection('rooms')
-          .where('participants', 'array-contains', { userId: uid }) // This requires exact object match, which is risky
-          .get()
-
-        // Better: We should have the roomId the user joined.
-        // Let's use a simpler approach: get all rooms and filter or use the roomId from the joinRoom event?
-        // Socket.IO "rooms" map can tell us which rooms the user was in.
-      } catch (e) {
-        console.error("Disconnect cleanup error:", e);
-      }
+      await handleRoomCleanup()
     })
 
     socket.on('error', (error) => {
