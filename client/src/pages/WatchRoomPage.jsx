@@ -259,6 +259,7 @@ export default function WatchRoomPage() {
   const handleScreenShare = async () => {
     if (isScreenSharing) {
       // Stop sharing
+      console.log("🛑 Stopping screen share...")
       if (webrtcRef.current) webrtcRef.current.stopAllStreams()
       socketRef.current.emit('stopScreenShare', { roomId })
       setIsScreenSharing(false)
@@ -268,6 +269,7 @@ export default function WatchRoomPage() {
       // Start sharing
       try {
         if (!webrtcRef.current) return;
+        console.log("🖥️ Starting screen share...")
         const stream = await webrtcRef.current.getScreenStream()
         localStreamRef.current = stream
         setIsScreenSharing(true)
@@ -280,6 +282,7 @@ export default function WatchRoomPage() {
           if (p.userId === user.uid) return
           if (!webrtcRef.current) return;
 
+          console.log(`🤝 Initiating share connection with ${p.name}`)
           const pc = await webrtcRef.current.createPeerConnection(p.userId)
           stream.getTracks().forEach(track => pc.addTrack(track, stream))
 
@@ -296,13 +299,14 @@ export default function WatchRoomPage() {
 
         // Stop sharing if stream ends
         stream.getTracks()[0].onended = () => {
+          console.log("⚠️ Screen share stream ended by user/browser")
           if (localStreamRef.current) {
             handleScreenShare()
           }
         }
 
       } catch (error) {
-        console.error("Screen share failed", error)
+        console.error("❌ Screen share failed:", error)
         setIsScreenSharing(false)
         localStreamRef.current = null
       }
@@ -381,8 +385,20 @@ export default function WatchRoomPage() {
             <div className="lg:col-span-2">
               <div className="bg-dark-secondary rounded-lg overflow-hidden mb-6">
                 <div className="aspect-video bg-black flex items-center justify-center relative">
-                  {remoteStream ? (
-                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain" />
+                  {playbackState.service === 'screenshare' ? (
+                    remoteStream ? (
+                      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="text-white flex flex-col items-center">
+                        <Monitor className="w-12 h-12 mb-4 text-primary-500 animate-pulse" />
+                        <span className="text-2xl font-bold">Waiting for Screen Share...</span>
+                        <p className="mt-2 text-gray-400 text-sm">
+                          {room?.hostId === user?.uid
+                            ? "Click 'Screen Share' above to start sharing."
+                            : "The host hasn't started sharing their screen yet."}
+                        </p>
+                      </div>
+                    )
                   ) : (
                     playbackState.service === 'netflix' ? (
                       <div className="text-white flex flex-col items-center">
@@ -424,9 +440,19 @@ export default function WatchRoomPage() {
                       <span className="text-xs font-bold text-accent-400 uppercase tracking-wider">Host Controls</span>
                     </div>
                     <div className="flex gap-4">
-                      <button onClick={() => updateService('youtube')} className={`px-4 py-1 rounded ${playbackState.service === 'youtube' ? 'bg-red-600' : 'bg-gray-700'}`}>YouTube</button>
-                      <button onClick={() => updateService('netflix')} className={`px-4 py-1 rounded ${playbackState.service === 'netflix' ? 'bg-red-800' : 'bg-gray-700'}`}>Netflix</button>
-                      <button onClick={() => updateService('hotstar')} className={`px-4 py-1 rounded ${playbackState.service === 'hotstar' ? 'bg-[#1347BD]' : 'bg-gray-700'}`}>Disney+ Hotstar</button>
+                      <button onClick={() => updateService('youtube')} className={`px-4 py-1 rounded transition ${playbackState.service === 'youtube' ? 'bg-red-600' : 'bg-gray-700 hover:bg-gray-600'}`}>YouTube</button>
+                      <button onClick={() => updateService('netflix')} className={`px-4 py-1 rounded transition ${playbackState.service === 'netflix' ? 'bg-red-800' : 'bg-gray-700 hover:bg-gray-600'}`}>Netflix</button>
+                      <button onClick={() => updateService('hotstar')} className={`px-4 py-1 rounded transition ${playbackState.service === 'hotstar' ? 'bg-[#1347BD]' : 'bg-gray-700 hover:bg-gray-600'}`}>Disney+ Hotstar</button>
+                      <button
+                        onClick={() => {
+                          updateService('screenshare');
+                          if (!isScreenSharing) handleScreenShare();
+                        }}
+                        className={`px-4 py-1 rounded transition flex items-center gap-2 ${playbackState.service === 'screenshare' ? 'bg-primary-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+                      >
+                        <Monitor className="w-4 h-4" />
+                        Screen Share
+                      </button>
                     </div>
 
                     {playbackState.service === 'youtube' && (
