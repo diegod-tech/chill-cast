@@ -48,7 +48,10 @@ try {
     console.log('🔥 Firebase Admin Initialized');
   }
 } catch (error) {
-  console.error('❌ Firebase Admin Initialization Error:', error);
+  console.error('❌ Firebase Admin Initialization Error:', error.message);
+  if (adminConfig.credential) {
+    console.log('💡 Using basic credential fallback');
+  }
 }
 
 export const auth = admin.auth();
