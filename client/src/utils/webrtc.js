@@ -43,8 +43,14 @@ export class WebRTCManager {
     }
 
     peerConnection.ontrack = (event) => {
-      console.log("Creating/Receiving remote stream track")
-      this.emit('remoteStream', event.streams[0], peerId)
+      console.log("🎥 Received track for peer:", peerId)
+      if (event.streams && event.streams[0]) {
+        this.emit('remoteStream', event.streams[0], peerId)
+      } else {
+        // Fallback for some browsers/situations where stream isn't bundled
+        const stream = new MediaStream([event.track])
+        this.emit('remoteStream', stream, peerId)
+      }
     }
 
     peerConnection.onconnectionstatechange = () => {

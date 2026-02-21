@@ -141,17 +141,13 @@ export default function WatchRoomPage() {
       })
 
       socketRef.current.on('screenShareStarted', ({ senderUserId }) => {
+        if (senderUserId === user.uid) return; // Host ignores its own event
         console.log(`User ${senderUserId} started screen sharing.`)
         setIsScreenSharing(false) // We are the receiver
       })
 
       socketRef.current.on('screenShareStopped', ({ senderUserId }) => {
         console.log(`User ${senderUserId} stopped screen sharing.`)
-        if (remoteStream && videoRef.current && videoRef.current.srcObject) {
-          const tracks = videoRef.current.srcObject.getTracks()
-          tracks.forEach(track => track.stop())
-          videoRef.current.srcObject = null
-        }
         setRemoteStream(null)
         setIsScreenSharing(false)
       })
@@ -177,7 +173,7 @@ export default function WatchRoomPage() {
         webrtcRef.current.stopAllStreams()
       }
     }
-  }, [roomId, user?.uid, setRoom, setParticipants, setLocalPlaybackState, remoteStream])
+  }, [roomId, user?.uid, setRoom, setParticipants, setLocalPlaybackState]) // Removed remoteStream
 
   // Handle new participants joining while sharing
   useEffect(() => {
@@ -225,10 +221,18 @@ export default function WatchRoomPage() {
     return () => unsubscribe()
   }, [roomId, setMessages])
 
-  // Attach remote stream to video element
+  // Attach remote stream to video element and handle autoplay
   useEffect(() => {
     if (remoteStream && videoRef.current) {
+      console.log("📺 Syncing stream to video element...")
       videoRef.current.srcObject = remoteStream
+
+      const playPromise = videoRef.current.play()
+      if (playPromise !== undefined) {
+        playPromise.catch(error => {
+          console.warn("⚠️ Autoplay blocked or failed:", error)
+        })
+      }
     }
   }, [remoteStream])
 
@@ -378,7 +382,7 @@ export default function WatchRoomPage() {
               <div className="bg-dark-secondary rounded-lg overflow-hidden mb-6">
                 <div className="aspect-video bg-black flex items-center justify-center relative">
                   {remoteStream ? (
-                    <video ref={videoRef} autoPlay playsInline className="w-full h-full object-contain" />
+                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain" />
                   ) : (
                     playbackState.service === 'netflix' ? (
                       <div className="text-white flex flex-col items-center">
