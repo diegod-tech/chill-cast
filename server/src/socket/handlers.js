@@ -31,6 +31,10 @@ export const initializeSocket = (io) => {
     const { uid, name, picture } = socket.user
     let userRoomId = null;
 
+    // Join the user's own private UID room IMMEDIATELY so WebRTC signals
+    // (offer, answer, ice-candidate) can reach them before joinRoom fires.
+    socket.join(uid);
+
     const handleRoomCleanup = async () => {
       if (!userRoomId) return
       const roomId = userRoomId
@@ -108,6 +112,13 @@ export const initializeSocket = (io) => {
             room: roomData,
             participants: [...existingParticipants, participant]
           })
+
+          // If the room is currently screen sharing, ask the presenter to
+          // send a fresh offer to this new joiner (Google Meet / Zoom pattern).
+          if (roomData.isScreenSharing && roomData.presenterId && roomData.presenterId !== uid) {
+            console.log(`[Socket] 🎙️ Requesting offer from presenter ${roomData.presenterId} for late joiner ${uid}`)
+            io.to(roomData.presenterId).emit('offer-request', { fromUserId: uid })
+          }
         } else {
           // User already in room, just send state
           socket.emit('roomJoined', {
@@ -225,8 +236,7 @@ export const initializeSocket = (io) => {
       })
     })
 
-    // Every user joins their own private room for direct signaling (1-to-1 WebRTC)
-    socket.join(uid);
+    // socket.join(uid) is called at the TOP of this handler (see above)
 
     /**
      * Request screen share - Notify others that I want to share

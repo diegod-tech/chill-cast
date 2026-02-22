@@ -69,161 +69,132 @@ export default function WatchRoomPage() {
     fetchRoom()
   }, [roomId, setRoom, setParticipants])
 
-  // 2. Initialize Socket (Depends on User)
+  // 2. Initialize Socket + WebRTC (depends on user)
   useEffect(() => {
-    if (!user) return; // Don't init socket until user is loaded
+    if (!user) return
 
-    socketRef.current = initSocket()
-    try {
-      webrtcRef.current = new WebRTCManager()
-    } catch (err) {
-      console.error("Failed to init WebRTC:", err)
-    }
+    const socket = initSocket()
+    socketRef.current = socket
+    webrtcRef.current = new WebRTCManager()
+    const wrtc = webrtcRef.current
 
-    if (socketRef.current) {
-      console.log('🔌 Socket initialized, joining room:', roomId)
-      socketRef.current.emit('joinRoom', { roomId })
+    console.log('🔌 Socket initialized, joining room:', roomId)
+    socket.emit('joinRoom', { roomId })
 
-      socketRef.current.on('roomJoined', (data) => {
-        console.log('✅ Room Joined Data:', data)
-        if (data && data.room && Object.keys(data.room).length > 0) {
-          setRoom(data.room)
-          if (data.room.playbackState) {
-            setLocalPlaybackState(prev => ({ ...prev, ...data.room.playbackState }))
-          }
-        } else {
-          console.warn("⚠️ Received empty room data from socket, ignoring overwrite.")
+    // ── Room state sync ──────────────────────────────────────────────────────
+    socket.on('roomJoined', (data) => {
+      console.log('✅ roomJoined:', data)
+      if (data?.room && Object.keys(data.room).length > 0) {
+        setRoom(data.room)
+        if (data.room.playbackState) {
+          setLocalPlaybackState(prev => ({ ...prev, ...data.room.playbackState }))
         }
+      }
+      if (data?.participants) setParticipants(data.participants)
+    })
 
-        if (data && data.participants) {
-          setParticipants(data.participants)
-        }
-      })
+    socket.on('updateParticipants', setParticipants)
 
-      // Add other socket listeners here
-      socketRef.current.on('updateParticipants', (updatedParticipants) => {
-        setParticipants(updatedParticipants)
-      })
+    socket.on('playbackSync', (state) => {
+      setLocalPlaybackState(prev => ({ ...prev, ...state }))
+    })
 
-      socketRef.current.on('playbackStateChanged', (state) => {
-        setLocalPlaybackState(prev => ({ ...prev, ...state }))
-      })
+    socket.on('playbackStateChanged', (state) => {
+      setLocalPlaybackState(prev => ({ ...prev, ...state }))
+    })
 
-      socketRef.current.on('webrtc_offer', async ({ senderUserId, offer }) => {
-        if (!webrtcRef.current) return;
-        console.log(`🤝 WEBRTC: Received offer from ${senderUserId}`)
-        try {
-          const answer = await webrtcRef.current.handleOffer(senderUserId, offer)
-          console.log(`🤝 WEBRTC: Sending answer to ${senderUserId}`)
-          socketRef.current.emit('webrtc_answer', {
-            targetUserId: senderUserId,
-            answer,
-            roomId
-          })
-        } catch (e) {
-          console.error("❌ WEBRTC Offer Error:", e)
-        }
-      })
+    // ── WebRTC signaling ──────────────────────────────────────────────────────
+    // Participant receives offer from host → create answer
+    socket.on('webrtc_offer', async ({ senderUserId, offer }) => {
+      if (!webrtcRef.current) return
+      console.log(`🤝 Offer from ${senderUserId}`)
+      try {
+        const answer = await webrtcRef.current.handleOffer(senderUserId, offer)
+        socket.emit('webrtc_answer', { targetUserId: senderUserId, answer, roomId })
+      } catch (e) {
+        console.error('❌ handleOffer error:', e)
+      }
+    })
 
-      socketRef.current.on('webrtc_answer', async ({ senderUserId, answer }) => {
-        if (!webrtcRef.current) return;
-        console.log(`🤝 WEBRTC: Received answer from ${senderUserId}`)
-        try {
-          await webrtcRef.current.handleAnswer(senderUserId, answer)
-          console.log(`🤝 WEBRTC: Connection state with ${senderUserId} updated after answer`)
-        } catch (e) {
-          console.error("❌ WEBRTC Answer Error:", e)
-        }
-      })
+    // Host receives answer from participant → finalize connection
+    socket.on('webrtc_answer', async ({ senderUserId, answer }) => {
+      if (!webrtcRef.current) return
+      console.log(`🤝 Answer from ${senderUserId}`)
+      try {
+        await webrtcRef.current.handleAnswer(senderUserId, answer)
+      } catch (e) {
+        console.error('❌ handleAnswer error:', e)
+      }
+    })
 
-      socketRef.current.on('webrtc_ice_candidate', async ({ senderUserId, candidate }) => {
-        if (!webrtcRef.current) return;
-        console.log(`🤝 WEBRTC: Received ICE candidate from ${senderUserId}`)
-        try {
-          await webrtcRef.current.addICECandidate(senderUserId, candidate)
-        } catch (e) {
-          console.error("❌ WEBRTC ICE Error:", e)
-        }
-      })
+    // ICE candidate — queued until remote desc is set (the main fix)
+    socket.on('webrtc_ice_candidate', async ({ senderUserId, candidate }) => {
+      if (!webrtcRef.current) return
+      try {
+        await webrtcRef.current.addICECandidate(senderUserId, candidate)
+      } catch (e) {
+        console.error('❌ addICECandidate error:', e)
+      }
+    })
 
-      socketRef.current.on('screenShareStarted', ({ senderUserId }) => {
-        if (senderUserId === user.uid) return; // Host ignores its own event
-        console.log(`User ${senderUserId} started screen sharing.`)
-        setIsScreenSharing(false) // We are the receiver
-      })
+    // ── Screen share signals ──────────────────────────────────────────────────
+    socket.on('screenShareStarted', ({ senderUserId }) => {
+      if (senderUserId === user.uid) return // host ignores own event
+      console.log(`📺 Share started by ${senderUserId}`)
+      // switch to screenshare service view
+      setLocalPlaybackState(prev => ({ ...prev, service: 'screenshare' }))
+    })
 
-      socketRef.current.on('screenShareStopped', ({ senderUserId }) => {
-        console.log(`User ${senderUserId} stopped screen sharing.`)
-        setRemoteStream(null)
+    socket.on('screenShareStopped', ({ senderUserId }) => {
+      console.log(`🛑 Share stopped by ${senderUserId}`)
+      setRemoteStream(null)
+      if (senderUserId !== user.uid) {
         setIsScreenSharing(false)
+        webrtcRef.current?.closePeerConnection(senderUserId)
+      }
+    })
 
-        // Receiver-side cleanup: Close the connection to the presenter
-        if (webrtcRef.current && senderUserId !== user.uid) {
-          console.log(`🧹 WEBRTC: Closing connection to former presenter ${senderUserId}`)
-          webrtcRef.current.closePeerConnection(senderUserId)
-        }
-      })
+    /**
+     * HOST receives this when a new participant joins while sharing.
+     * Server sends 'offer-request' → host sends a fresh offer to that participant.
+     * This replaces the unreliable proactive useEffect.
+     */
+    socket.on('offer-request', async ({ fromUserId }) => {
+      const stream = localStreamRef.current
+      if (!stream || !webrtcRef.current) return
+      console.log(`🤝 Offer requested by late joiner ${fromUserId}`)
+      try {
+        // Reset any existing stale connection to this peer first
+        webrtcRef.current.closePeerConnection(fromUserId)
+        const pc = await webrtcRef.current.createPeerConnection(fromUserId)
+        webrtcRef.current.addTracksToConnection(fromUserId, stream)
+        const offer = await webrtcRef.current.createOffer(fromUserId)
+        socket.emit('webrtc_offer', { targetUserId: fromUserId, offer, roomId })
+      } catch (e) {
+        console.error('❌ offer-request error:', e)
+      }
+    })
 
-      webrtcRef.current.on('remoteStream', (stream, peerId) => {
-        console.log(`🎥 WEBRTC: Received remote stream from ${peerId}`)
-        setRemoteStream(stream)
-      })
+    // ── WebRTC manager events → socket relay ──────────────────────────────────
+    wrtc.on('remoteStream', (stream, peerId) => {
+      console.log(`🎥 Remote stream from ${peerId}`)
+      setRemoteStream(stream)
+    })
 
-      webrtcRef.current.on('ice-candidate', (candidate, peerId) => {
-        console.log(`🤝 WEBRTC: Sending ICE candidate to ${peerId}`)
-        socketRef.current.emit('webrtc_ice_candidate', {
-          targetUserId: peerId,
-          candidate,
-          roomId
-        })
-      })
-    }
+    wrtc.on('ice-candidate', (candidate, peerId) => {
+      socket.emit('webrtc_ice_candidate', { targetUserId: peerId, candidate, roomId })
+    })
 
+    // ── Cleanup ───────────────────────────────────────────────────────────────
     return () => {
-      console.log('🔌 Disconnecting socket and cleaning up WebRTC')
+      console.log('🔌 Disconnecting socket, cleaning WebRTC')
       disconnectSocket()
-      if (webrtcRef.current) {
-        webrtcRef.current.stopAllStreams()
-      }
-      // NEW: Clear room state from store to prevent hostId leak
-      const clearRoom = useRoomStore.getState().clearRoom
-      if (clearRoom) clearRoom()
+      webrtcRef.current?.stopAllStreams()
+      localStreamRef.current?.getTracks().forEach(t => t.stop())
+      localStreamRef.current = null
+      useRoomStore.getState().clearRoom?.()
     }
-  }, [roomId, user?.uid, setRoom, setParticipants, setLocalPlaybackState]) // Removed remoteStream
-
-  // 3. Proactive Share Logic - Only for the Host
-  useEffect(() => {
-    if (isScreenSharing && room?.hostId === user?.uid && participants.length > 1) {
-      const stream = localStreamRef.current;
-      if (!stream) {
-        console.log("⚠️ WEBRTC: isScreenSharing is true but no localStream available for proactive share");
-        return;
-      }
-
-      participants.forEach(async (p) => {
-        if (p.userId === user.uid) return
-        if (!webrtcRef.current) return;
-
-        // Only create offer if not already connected
-        if (!webrtcRef.current.peerConnections.has(p.userId)) {
-          console.log(`🤝 WEBRTC: Proactively offering share to new participant: ${p.name}`);
-          try {
-            const pc = await webrtcRef.current.createPeerConnection(p.userId)
-            stream.getTracks().forEach(track => pc.addTrack(track, stream))
-
-            const offer = await webrtcRef.current.createOffer(p.userId)
-            socketRef.current.emit('webrtc_offer', {
-              targetUserId: p.userId,
-              offer,
-              roomId
-            })
-          } catch (err) {
-            console.error(`❌ WEBRTC: Failed to send proactive offer to ${p.name}`, err)
-          }
-        }
-      })
-    }
-  }, [participants, isScreenSharing, room?.hostId, user?.uid, roomId])
+  }, [roomId, user?.uid]) // minimal deps — callbacks use refs
 
   // Firestore Chat Listener
   useEffect(() => {
@@ -292,80 +263,89 @@ export default function WatchRoomPage() {
     }
   }
 
+  /**
+   * handleScreenShare — Google Meet pattern
+   *
+   * START:
+   *   1. Get screen stream via getDisplayMedia
+   *   2. For each current participant, create PC → add tracks → create offer → send
+   *   3. Emit requestScreenShare so server notifies others and future joiners
+   *      can trigger 'offer-request' back to us (handled in useEffect above)
+   *   4. Show local preview
+   *
+   * STOP:
+   *   1. Stop all tracks
+   *   2. Close all peer connections (share-only)
+   *   3. Emit stopScreenShare
+   */
   const handleScreenShare = async () => {
     if (isScreenSharing) {
-      // Stop sharing
-      console.log("🛑 Stopping screen share...")
-      if (webrtcRef.current) webrtcRef.current.stopAllStreams()
+      // ── STOP ──────────────────────────────────────────────────────────────
+      console.log('🛑 Stopping screen share')
+      // Stop all local tracks
+      localStreamRef.current?.getTracks().forEach(t => t.stop())
+      localStreamRef.current = null
+      // Close all peer connections created for this share session
+      webrtcRef.current?.stopShareConnections(user.uid)
       socketRef.current.emit('stopScreenShare', { roomId })
       setIsScreenSharing(false)
       setRemoteStream(null)
-      localStreamRef.current = null
-    } else {
-      // Start sharing
-      try {
-        if (!webrtcRef.current) return;
-        console.log("🖥️ Starting screen share...")
-        const stream = await webrtcRef.current.getScreenStream()
-        localStreamRef.current = stream
-        setIsScreenSharing(true)
+      return
+    }
 
-        // Switch room service to screenshare so everyone sees it
-        updateService('screenshare');
+    // ── START ──────────────────────────────────────────────────────────────
+    try {
+      if (!webrtcRef.current || !socketRef.current) return
+      console.log('🖥️ Starting screen share')
 
-        // Notify room
-        socketRef.current.emit('requestScreenShare', { roomId })
+      const stream = await webrtcRef.current.getScreenStream()
+      localStreamRef.current = stream
 
-        // Initial connections to everyone present
-        participants.forEach(async (p) => {
-          if (p.userId === user.uid) return
-          if (!webrtcRef.current) return;
+      // Immediately show local preview
+      setRemoteStream(stream)
+      setIsScreenSharing(true)
 
-          console.log(`🤝 Initiating share connection with ${p.name}`)
-          try {
-            const pc = await webrtcRef.current.createPeerConnection(p.userId)
+      // Switch everyone's view to screenshare service
+      updateService('screenshare')
 
-            // Clear existing senders if any (to avoid duplicate tracks on restart)
-            pc.getSenders().forEach(sender => {
-              if (sender.track) {
-                console.log(`[PC] Removing stale track from ${p.name}`);
-                pc.removeTrack(sender);
-              }
-            });
+      // Tell server we're sharing (it will emit screenShareStarted to others
+      // and emit 'offer-request' to us when new users join)
+      socketRef.current.emit('requestScreenShare', { roomId })
 
-            // Add new tracks
-            stream.getTracks().forEach(track => {
-              console.log(`[PC] Adding ${track.kind} track for ${p.name}`);
-              pc.addTrack(track, stream);
-            });
+      // Send an offer to every current participant
+      const otherParticipants = participants.filter(p => p.userId !== user.uid)
+      console.log(`🤝 Sending offers to ${otherParticipants.length} participant(s)`)
 
-            const offer = await webrtcRef.current.createOffer(p.userId)
-            socketRef.current.emit('webrtc_offer', {
-              targetUserId: p.userId,
-              offer,
-              roomId
-            })
-          } catch (err) {
-            console.error(`❌ WEBRTC: Failed to initiate connection with ${p.name}`, err);
-          }
-        })
-
-        // Local preview
-        setRemoteStream(stream)
-
-        // Stop sharing if stream ends
-        stream.getTracks()[0].onended = () => {
-          console.log("⚠️ Screen share stream ended by user/browser")
-          if (localStreamRef.current) {
-            handleScreenShare()
-          }
+      for (const p of otherParticipants) {
+        try {
+          // Always start fresh — close any stale connection first
+          webrtcRef.current.closePeerConnection(p.userId)
+          const pc = await webrtcRef.current.createPeerConnection(p.userId)
+          webrtcRef.current.addTracksToConnection(p.userId, stream)
+          const offer = await webrtcRef.current.createOffer(p.userId)
+          socketRef.current.emit('webrtc_offer', { targetUserId: p.userId, offer, roomId })
+          console.log(`📤 Offer sent to ${p.name}`)
+        } catch (err) {
+          console.error(`❌ Failed to send offer to ${p.name}:`, err)
         }
-
-      } catch (error) {
-        console.error("❌ Screen share failed:", error)
-        setIsScreenSharing(false)
-        localStreamRef.current = null
       }
+
+      // If user stops sharing via browser's native button
+      stream.getTracks().forEach(track => {
+        track.onended = () => {
+          console.log('⚠️ Track ended by browser — stopping share')
+          handleScreenShare() // call stop branch
+        }
+      })
+
+    } catch (error) {
+      if (error.name === 'NotAllowedError') {
+        console.log('ℹ️ User cancelled screen share picker')
+      } else {
+        console.error('❌ Screen share error:', error)
+      }
+      setIsScreenSharing(false)
+      localStreamRef.current = null
     }
   }
 
