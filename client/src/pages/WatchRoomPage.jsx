@@ -185,6 +185,9 @@ export default function WatchRoomPage() {
       if (webrtcRef.current) {
         webrtcRef.current.stopAllStreams()
       }
+      // NEW: Clear room state from store to prevent hostId leak
+      const clearRoom = useRoomStore.getState().clearRoom
+      if (clearRoom) clearRoom()
     }
   }, [roomId, user?.uid, setRoom, setParticipants, setLocalPlaybackState]) // Removed remoteStream
 

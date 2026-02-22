@@ -12,9 +12,18 @@ export const createRoom = async (req, res) => {
     const roomId = uuidv4().substring(0, 8) // Short ID
     const roomRef = db.collection('rooms').doc(roomId)
 
+    // Ensure we don't overwrite (unlikely with UUID but good practice)
+    const existing = await roomRef.get()
+    if (existing.exists) {
+      console.warn(`[Room Creation] Collision or duplicate attempt for ID: ${roomId}`)
+      return res.status(409).json({ message: 'Room already exists or ID collision' })
+    }
+
     // Get host info
     const hostDoc = await db.collection('users').doc(uid).get()
     const hostData = hostDoc.exists ? hostDoc.data() : { uid, name: 'Unknown' }
+
+    console.log(`[Room Creation] CREATING: ${roomId} | Host UID: ${uid} | AppId UID: ${req.user.uid}`)
 
     const newRoom = {
       roomId,
@@ -39,7 +48,7 @@ export const createRoom = async (req, res) => {
     }
 
     await roomRef.set(newRoom)
-    console.log(`[Room Created] ID: ${roomId}, Host: ${uid}, Name: ${name}`)
+    console.log(`✅ [Room Created] ID: ${roomId}, Host: ${uid}, Name: ${name}`)
 
     res.status(201).json(newRoom)
   } catch (error) {
@@ -82,10 +91,13 @@ export const getRoom = async (req, res) => {
     const roomDoc = await db.collection('rooms').doc(roomId).get()
 
     if (!roomDoc.exists) {
+      console.warn(`[Get Room] Room not found: ${roomId}`)
       return res.status(404).json({ message: 'Room not found' })
     }
 
-    res.json(roomDoc.data())
+    const roomData = roomDoc.data()
+    console.log(`[Get Room] FETCHED: ${roomId} | Host: ${roomData.hostId} | Requester: ${req.user.uid}`)
+    res.json(roomData)
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch room' })
   }

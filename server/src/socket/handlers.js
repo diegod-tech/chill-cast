@@ -78,6 +78,7 @@ export const initializeSocket = (io) => {
         }
 
         const roomData = roomDoc.data();
+        console.log(`🤝 [Socket Join] User: ${uid} | Room: ${roomId} | Host: ${roomData.hostId}`)
         const existingParticipants = roomData.participants || [];
         const isAlreadyInRoom = existingParticipants.some(p => p.userId === uid);
 
