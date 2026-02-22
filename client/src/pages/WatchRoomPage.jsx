@@ -131,9 +131,9 @@ export default function WatchRoomPage() {
     socket.on('webrtc_ice_candidate', async ({ senderUserId, candidate }) => {
       if (!webrtcRef.current) return
       try {
-        await webrtcRef.current.addICECandidate(senderUserId, candidate)
+        await webrtcRef.current.addIceCandidate(senderUserId, candidate)
       } catch (e) {
-        console.error('❌ addICECandidate error:', e)
+        console.error('❌ addIceCandidate error:', e)
       }
     })
 
@@ -150,7 +150,7 @@ export default function WatchRoomPage() {
       setRemoteStream(null)
       if (senderUserId !== user.uid) {
         setIsScreenSharing(false)
-        webrtcRef.current?.closePeerConnection(senderUserId)
+        webrtcRef.current?.close(senderUserId)
       }
     })
 
@@ -164,11 +164,7 @@ export default function WatchRoomPage() {
       if (!stream || !webrtcRef.current) return
       console.log(`🤝 Offer requested by late joiner ${fromUserId}`)
       try {
-        // Reset any existing stale connection to this peer first
-        webrtcRef.current.closePeerConnection(fromUserId)
-        const pc = await webrtcRef.current.createPeerConnection(fromUserId)
-        webrtcRef.current.addTracksToConnection(fromUserId, stream)
-        const offer = await webrtcRef.current.createOffer(fromUserId)
+        const offer = await webrtcRef.current.createOffer(fromUserId, stream)
         socket.emit('webrtc_offer', { targetUserId: fromUserId, offer, roomId })
       } catch (e) {
         console.error('❌ offer-request error:', e)
@@ -181,7 +177,7 @@ export default function WatchRoomPage() {
       setRemoteStream(stream)
     })
 
-    wrtc.on('ice-candidate', (candidate, peerId) => {
+    wrtc.on('icecandidate', (candidate, peerId) => {
       socket.emit('webrtc_ice_candidate', { targetUserId: peerId, candidate, roomId })
     })
 
@@ -189,7 +185,7 @@ export default function WatchRoomPage() {
     return () => {
       console.log('🔌 Disconnecting socket, cleaning WebRTC')
       disconnectSocket()
-      webrtcRef.current?.stopAllStreams()
+      webrtcRef.current?.destroy()
       localStreamRef.current?.getTracks().forEach(t => t.stop())
       localStreamRef.current = null
       useRoomStore.getState().clearRoom?.()
@@ -234,14 +230,15 @@ export default function WatchRoomPage() {
   useEffect(() => {
     if (participants && webrtcRef.current) {
       const currentUids = new Set(participants.map(p => p.userId))
-      for (const peerId of webrtcRef.current.peerConnections.keys()) {
+      for (const peerId of webrtcRef.current.peers.keys()) {
         if (!currentUids.has(peerId) && peerId !== user?.uid) {
           console.log(`🧹 WEBRTC: Cleaning up stale connection for ${peerId}`)
-          webrtcRef.current.closePeerConnection(peerId)
+          webrtcRef.current.close(peerId)
         }
       }
     }
   }, [participants, user?.uid])
+
 
   const handleSendMessage = async (e) => {
     e.preventDefault()
@@ -282,11 +279,10 @@ export default function WatchRoomPage() {
     if (isScreenSharing) {
       // ── STOP ──────────────────────────────────────────────────────────────
       console.log('🛑 Stopping screen share')
-      // Stop all local tracks
       localStreamRef.current?.getTracks().forEach(t => t.stop())
       localStreamRef.current = null
-      // Close all peer connections created for this share session
-      webrtcRef.current?.stopShareConnections(user.uid)
+      // Close all P2P connections except our own
+      webrtcRef.current?.closeAll(user.uid)
       socketRef.current.emit('stopScreenShare', { roomId })
       setIsScreenSharing(false)
       setRemoteStream(null)
@@ -318,11 +314,8 @@ export default function WatchRoomPage() {
 
       for (const p of otherParticipants) {
         try {
-          // Always start fresh — close any stale connection first
-          webrtcRef.current.closePeerConnection(p.userId)
-          const pc = await webrtcRef.current.createPeerConnection(p.userId)
-          webrtcRef.current.addTracksToConnection(p.userId, stream)
-          const offer = await webrtcRef.current.createOffer(p.userId)
+          // createOffer() in the new API: always starts fresh + adds tracks atomically
+          const offer = await webrtcRef.current.createOffer(p.userId, stream)
           socketRef.current.emit('webrtc_offer', { targetUserId: p.userId, offer, roomId })
           console.log(`📤 Offer sent to ${p.name}`)
         } catch (err) {

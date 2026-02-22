@@ -98,7 +98,7 @@ export const initializeSocket = (io) => {
             participants: FieldValue.arrayUnion(participant)
           })
 
-          // Broadcast to others
+          // Broadcast to others that someone joined
           socket.to(roomId).emit('userJoined', {
             userId: uid,
             name: name,
@@ -106,12 +106,20 @@ export const initializeSocket = (io) => {
             message: `${name} joined the room`
           })
 
-          // Send room state to user with new participant included
+          const updatedParticipants = [...existingParticipants, participant]
+
+          // Send room state to the joining user
           socket.emit('roomJoined', {
             roomId,
             room: roomData,
-            participants: [...existingParticipants, participant]
+            participants: updatedParticipants
           })
+
+          // CRITICAL FIX: Also broadcast the full participant list to everyone
+          // else in the room so the host's participants state stays up-to-date.
+          // Without this, the host never knows the participant joined and
+          // sends 0 WebRTC offers during screen share.
+          socket.to(roomId).emit('updateParticipants', updatedParticipants)
 
           // If the room is currently screen sharing, ask the presenter to
           // send a fresh offer to this new joiner (Google Meet / Zoom pattern).

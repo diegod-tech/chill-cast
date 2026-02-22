@@ -1,320 +1,263 @@
 /**
- * WebRTC Manager — Screen Sharing (Google Meet style)
+ * WebRTCManager — Simple, battle-tested screen share implementation.
  *
- * Key design decisions:
- *  - ICE candidates are QUEUED until the remote description is set, then flushed.
- *    This is the #1 fix that makes P2P handshakes reliable.
- *  - Each peerId gets its own connection, candidate queue, and flush state.
- *  - resetPeerConnection() force-closes and removes a connection so a fresh
- *    offer can be made without stale state.
+ * Design: All state is on the RTCPeerConnection object itself (via a wrapper object).
+ * This avoids the "Maps out of sync" problem.
+ *
+ * Key fix: ICE candidate queuing via a per-connection pendingCandidates array.
+ * Candidates received before the remote description is set are queued and flushed
+ * the moment setRemoteDescription succeeds.
  */
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
 ]
 
 export class WebRTCManager {
   constructor() {
-    this.peerConnections = new Map()   // peerId → RTCPeerConnection
-    this.peerStreams = new Map()   // peerId → MediaStream (received)
-    this.iceCandidateQueues = new Map() // peerId → RTCIceCandidate[]
-    this.remoteDescSet = new Map()   // peerId → boolean
+    /** @type {Map<string, { pc: RTCPeerConnection, pendingCandidates: RTCIceCandidateInit[], remoteSet: boolean }>} */
+    this.peers = new Map()
     this.events = {}
   }
 
-  // ─── Event Emitter ───────────────────────────────────────────────────────────
-
-  on(event, listener) {
+  // ─── Event Emitter ────────────────────────────────────────────────────────────
+  on(event, fn) {
     if (!this.events[event]) this.events[event] = []
-    this.events[event].push(listener)
+    this.events[event].push(fn)
   }
-
-  off(event, listener) {
-    if (this.events[event]) {
-      this.events[event] = this.events[event].filter(l => l !== listener)
-    }
+  off(event, fn) {
+    if (this.events[event]) this.events[event] = this.events[event].filter(l => l !== fn)
   }
-
   emit(event, ...args) {
-    if (this.events[event]) {
-      this.events[event].forEach(listener => {
-        try { listener(...args) } catch (e) { console.error('[WebRTC] Listener error:', e) }
-      })
-    }
+    ; (this.events[event] || []).forEach(fn => { try { fn(...args) } catch (e) { console.error('[WEBRTC] emit error:', e) } })
   }
 
-  // ─── Peer Connection ──────────────────────────────────────────────────────────
+  // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-  /**
-   * Creates a new RTCPeerConnection for peerId.
-   * If one already exists and is still alive, returns it.
-   * If one exists but is closed/failed, resets it first.
-   */
-  async createPeerConnection(peerId) {
-    const existing = this.peerConnections.get(peerId)
-    if (existing) {
-      const dead = existing.connectionState === 'closed'
-        || existing.connectionState === 'failed'
-        || existing.signalingState === 'closed'
-      if (!dead) {
-        console.log(`[PC] Reusing existing connection for ${peerId}`)
-        return existing
-      }
-      console.log(`[PC] Resetting dead connection for ${peerId}`)
-      this._resetPeer(peerId)
+  /** Get peer state object or null */
+  _peer(peerId) {
+    return this.peers.get(peerId) || null
+  }
+
+  /** Create or get the peer entry. Returns the entry. */
+  async _ensurePeer(peerId) {
+    const entry = this.peers.get(peerId)
+    if (entry) {
+      const { pc } = entry
+      const alive = pc.connectionState !== 'closed'
+        && pc.connectionState !== 'failed'
+        && pc.signalingState !== 'closed'
+      if (alive) return entry
+      console.log(`[WEBRTC] ♻️ Recreating dead PC for ${peerId}`)
+      try { pc.close() } catch (_) { }
+      this.peers.delete(peerId)
     }
 
-    console.log(`[PC] Creating new RTCPeerConnection for ${peerId}`)
+    return this._createPeer(peerId)
+  }
+
+  /** Always creates a BRAND NEW peer entry. */
+  _createPeer(peerId) {
+    console.log(`[WEBRTC] ➕ Creating RTCPeerConnection for ${peerId}`)
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
 
-    // ICE candidate → queue until we know remote desc is set
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log(`[PC] 🧊 ICE candidate for ${peerId}`)
-        this.emit('ice-candidate', event.candidate, peerId)
+    /** @type {{ pc: RTCPeerConnection, pendingCandidates: RTCIceCandidateInit[], remoteSet: boolean }} */
+    const entry = { pc, pendingCandidates: [], remoteSet: false }
+    this.peers.set(peerId, entry)
+
+    // Relay our ICE candidates to the other side via the app's socket
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) {
+        console.log(`[WEBRTC] 🧊 ICE → ${peerId}`)
+        this.emit('icecandidate', candidate, peerId)
       }
     }
 
-    // Track arrives → bundle into a single stream and emit
-    pc.ontrack = (event) => {
-      console.log(`[PC] 🎥 Track received from ${peerId}: ${event.track.kind}`)
-      let stream = this.peerStreams.get(peerId)
-      if (!stream) {
-        stream = new MediaStream()
-        this.peerStreams.set(peerId, stream)
+    // When we receive remote tracks, bundle them into one MediaStream
+    const inboundStream = new MediaStream()
+    pc.ontrack = ({ track }) => {
+      console.log(`[WEBRTC] 🎥 Track from ${peerId}: ${track.kind}`)
+      if (!inboundStream.getTracks().find(t => t.id === track.id)) {
+        inboundStream.addTrack(track)
       }
-      // Avoid duplicate tracks
-      if (!stream.getTracks().find(t => t.id === event.track.id)) {
-        stream.addTrack(event.track)
-      }
-      this.emit('remoteStream', stream, peerId)
+      this.emit('remoteStream', inboundStream, peerId)
     }
 
     pc.onconnectionstatechange = () => {
-      console.log(`[PC] 🌐 ${peerId}: ${pc.connectionState}`)
-      if (pc.connectionState === 'connected') {
-        this.emit('peerConnected', peerId)
-      }
-      if (pc.connectionState === 'failed') {
-        console.warn(`[PC] ⚠️ Connection FAILED for ${peerId}, may need restart`)
-        this.emit('peerFailed', peerId)
-      }
-      if (pc.connectionState === 'disconnected') {
-        this.emit('peerDisconnected', peerId)
-      }
+      console.log(`[WEBRTC] 🌐 ${peerId}: ${pc.connectionState}`)
+      if (pc.connectionState === 'connected') this.emit('connected', peerId)
+      if (pc.connectionState === 'failed') this.emit('failed', peerId)
     }
+    pc.oniceconnectionstatechange = () => console.log(`[WEBRTC] 🧊 ICE ${peerId}: ${pc.iceConnectionState}`)
+    pc.onsignalingstatechange = () => console.log(`[WEBRTC] 🚦 SIG ${peerId}: ${pc.signalingState}`)
 
-    pc.oniceconnectionstatechange = () => {
-      console.log(`[PC] 🧊 ICE ${peerId}: ${pc.iceConnectionState}`)
-    }
-
-    pc.onsignalingstatechange = () => {
-      console.log(`[PC] 🚥 Signaling ${peerId}: ${pc.signalingState}`)
-    }
-
-    // Initialize per-peer state
-    this.peerConnections.set(peerId, pc)
-    this.iceCandidateQueues.set(peerId, [])
-    this.remoteDescSet.set(peerId, false)
-
-    return pc
+    return entry
   }
 
-  /** Force-closes and removes all state for a peer. */
-  _resetPeer(peerId) {
-    const pc = this.peerConnections.get(peerId)
-    if (pc) {
-      try { pc.close() } catch (_) { }
-      this.peerConnections.delete(peerId)
+  /** Apply a candidate to a PC, queuing it if remote description is not yet set. */
+  async _applyCandidate(peerId, candidate) {
+    // Ensure the entry exists (peer may not have a PC yet)
+    if (!this.peers.has(peerId)) {
+      // Create a stub entry with just a queue — the PC will be created on offer/answer
+      const entry = { pc: null, pendingCandidates: [candidate], remoteSet: false }
+      this.peers.set(peerId, entry)
+      console.log(`[WEBRTC] 🧊 Pre-queued candidate for ${peerId} (no PC yet, queue: 1)`)
+      return
     }
-    this.peerStreams.delete(peerId)
-    this.iceCandidateQueues.delete(peerId)
-    this.remoteDescSet.delete(peerId)
+
+    const entry = this.peers.get(peerId)
+    if (!entry.remoteSet || !entry.pc) {
+      entry.pendingCandidates.push(candidate)
+      console.log(`[WEBRTC] 🧊 Queued candidate for ${peerId} (queue: ${entry.pendingCandidates.length})`)
+      return
+    }
+
+    try {
+      await entry.pc.addIceCandidate(new RTCIceCandidate(candidate))
+    } catch (e) {
+      console.warn(`[WEBRTC] ICE error for ${peerId}:`, e.message)
+    }
   }
 
-  /** Public reset — same as _resetPeer but named for external use. */
-  closePeerConnection(peerId) {
-    this._resetPeer(peerId)
+  /** Flush pending candidates after remote desc is set. */
+  async _flushCandidates(peerId) {
+    const entry = this.peers.get(peerId)
+    if (!entry || !entry.pc) return
+    if (entry.pendingCandidates.length === 0) return
+    console.log(`[WEBRTC] 🚿 Flushing ${entry.pendingCandidates.length} candidates for ${peerId}`)
+    for (const c of entry.pendingCandidates) {
+      try { await entry.pc.addIceCandidate(new RTCIceCandidate(c)) }
+      catch (e) { console.warn(`[WEBRTC] Flush ICE error for ${peerId}:`, e.message) }
+    }
+    entry.pendingCandidates = []
   }
 
-  // ─── Offer / Answer ───────────────────────────────────────────────────────────
+  // ─── Public API ───────────────────────────────────────────────────────────────
 
   /**
-   * Creates and stores a local offer for peerId.
-   * Caller must add tracks BEFORE calling this.
+   * HOST: Create a connection to `peerId`, add tracks from `stream`, create & return offer SDP.
    */
-  async createOffer(peerId) {
-    const pc = this.peerConnections.get(peerId)
-    if (!pc) throw new Error(`[WebRTC] No PC for ${peerId}`)
+  async createOffer(peerId, stream) {
+    // Always start fresh for a new share session
+    this.close(peerId)
+    const entry = this._createPeer(peerId)
+    const { pc } = entry
+
+    // Add every track from the local stream
+    stream.getTracks().forEach(track => {
+      pc.addTrack(track, stream)
+      console.log(`[WEBRTC] ➕ Track added (${track.kind}) for ${peerId}`)
+    })
+
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    console.log(`[PC] 📤 Offer created for ${peerId}`)
-    return offer
+    console.log(`[WEBRTC] 📤 Offer ready for ${peerId}`)
+    return pc.localDescription
   }
 
   /**
-   * Handles an incoming offer from peerId.
-   * Resets connection if stale, sets remote desc, creates + returns answer.
-   * After this call, ICE candidates for this peer are flushed.
+   * PARTICIPANT: Handle incoming offer from `peerId`, return answer SDP.
    */
-  async handleOffer(peerId, offer) {
-    // Ensure clean connection
-    const existing = this.peerConnections.get(peerId)
-    if (existing) {
-      const dead = existing.connectionState === 'closed'
-        || existing.connectionState === 'failed'
-        || existing.signalingState === 'closed'
-      if (dead) this._resetPeer(peerId)
+  async handleOffer(peerId, offerSdp) {
+    console.log(`[WEBRTC] 📥 Handling offer from ${peerId}`)
+
+    // Check if we have a stub entry with pre-queued candidates
+    const existing = this.peers.get(peerId)
+    let entry
+    if (existing && !existing.pc) {
+      // Stub has pre-queued candidates — create real PC and attach them
+      const real = this._createPeer(peerId)
+      real.pendingCandidates = existing.pendingCandidates
+      entry = real
+    } else {
+      entry = await this._ensurePeer(peerId)
     }
 
-    const pc = await this.createPeerConnection(peerId)
-
-    await pc.setRemoteDescription(new RTCSessionDescription(offer))
-    console.log(`[PC] 📥 Remote description set for ${peerId} (offer)`)
-
-    // Mark remote desc as set so queued candidates can be flushed
-    this.remoteDescSet.set(peerId, true)
+    const { pc } = entry
+    await pc.setRemoteDescription(new RTCSessionDescription(offerSdp))
+    entry.remoteSet = true
     await this._flushCandidates(peerId)
 
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    console.log(`[PC] 📤 Answer created for ${peerId}`)
-    return answer
+    console.log(`[WEBRTC] 📤 Answer ready for ${peerId}`)
+    return pc.localDescription
   }
 
   /**
-   * Sets the remote answer for peerId after we sent an offer.
-   * After this, queued ICE candidates are flushed.
+   * HOST: Handle incoming answer from `peerId`.
    */
-  async handleAnswer(peerId, answer) {
-    const pc = this.peerConnections.get(peerId)
-    if (!pc) {
-      console.warn(`[PC] handleAnswer: no PC for ${peerId}`)
+  async handleAnswer(peerId, answerSdp) {
+    console.log(`[WEBRTC] 📥 Handling answer from ${peerId}`)
+    const entry = this.peers.get(peerId)
+    if (!entry || !entry.pc) {
+      console.warn(`[WEBRTC] handleAnswer: no PC for ${peerId}`)
       return
     }
-    // Only set if in a state that accepts remote answers
-    if (pc.signalingState !== 'have-local-offer') {
-      console.warn(`[PC] handleAnswer: unexpected signaling state ${pc.signalingState} for ${peerId}`)
+    const { pc } = entry
+    if (pc.signalingState === 'stable' || pc.signalingState === 'closed') {
+      console.warn(`[WEBRTC] handleAnswer: wrong signalingState (${pc.signalingState}) for ${peerId}, skipping`)
       return
     }
-    await pc.setRemoteDescription(new RTCSessionDescription(answer))
-    console.log(`[PC] 📥 Remote description set for ${peerId} (answer)`)
-
-    this.remoteDescSet.set(peerId, true)
+    await pc.setRemoteDescription(new RTCSessionDescription(answerSdp))
+    entry.remoteSet = true
     await this._flushCandidates(peerId)
+    console.log(`[WEBRTC] ✅ Connection ready with ${peerId}`)
   }
 
-  // ─── ICE Candidate Queuing (The Critical Fix) ─────────────────────────────────
-
   /**
-   * Adds an ICE candidate. If remote description is not yet set, queues it.
-   * Once remote description is set, candidates are flushed via _flushCandidates().
+   * Add a remote ICE candidate for `peerId`. Queues if remote desc not yet set.
    */
-  async addICECandidate(peerId, candidate) {
+  async addIceCandidate(peerId, candidate) {
     if (!candidate) return
-
-    const remoteSet = this.remoteDescSet.get(peerId)
-    if (!remoteSet) {
-      // Queue it — will be applied when handleOffer/handleAnswer sets remote desc
-      const queue = this.iceCandidateQueues.get(peerId) || []
-      queue.push(candidate)
-      this.iceCandidateQueues.set(peerId, queue)
-      console.log(`[PC] 🧊 Queued ICE candidate for ${peerId} (queue size: ${queue.length})`)
-      return
-    }
-
     await this._applyCandidate(peerId, candidate)
   }
 
-  async _flushCandidates(peerId) {
-    const queue = this.iceCandidateQueues.get(peerId) || []
-    if (queue.length === 0) return
-    console.log(`[PC] 🚿 Flushing ${queue.length} queued ICE candidates for ${peerId}`)
-    for (const candidate of queue) {
-      await this._applyCandidate(peerId, candidate)
-    }
-    this.iceCandidateQueues.set(peerId, [])
-  }
-
-  async _applyCandidate(peerId, candidate) {
-    const pc = this.peerConnections.get(peerId)
-    if (!pc) return
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate))
-    } catch (e) {
-      // This can happen benignly if the connection closed mid-handshake
-      console.warn(`[PC] ICE candidate error for ${peerId}:`, e.message)
-    }
-  }
-
-  // ─── Media ────────────────────────────────────────────────────────────────────
-
+  /**
+   * Capture screen and return the MediaStream.
+   */
   async getScreenStream() {
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { cursor: 'always', width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: true,
-    })
-    return stream
-  }
-
-  /**
-   * Add all tracks from `stream` to the PC for `peerId`.
-   * Skips tracks that are already added (safe to call multiple times).
-   */
-  addTracksToConnection(peerId, stream) {
-    const pc = this.peerConnections.get(peerId)
-    if (!pc) return
-    const existingSenderTracks = pc.getSenders().map(s => s.track?.id).filter(Boolean)
-    stream.getTracks().forEach(track => {
-      if (!existingSenderTracks.includes(track.id)) {
-        pc.addTrack(track, stream)
-        console.log(`[PC] ➕ Added ${track.kind} track to ${peerId}`)
-      }
+    return navigator.mediaDevices.getDisplayMedia({
+      video: { cursor: 'always' },
+      audio: false, // audio:true can cause permission errors on some systems
     })
   }
 
   /**
-   * Replace all senders in a PC with tracks from the new stream.
-   * Used when restarting a share — avoids renegotiation race conditions.
+   * Close the connection to a specific peer.
    */
-  replaceTracksInConnection(peerId, stream) {
-    const pc = this.peerConnections.get(peerId)
-    if (!pc) return
-    const newTracks = stream.getTracks()
-    pc.getSenders().forEach(sender => {
-      const replacement = newTracks.find(t => t.kind === sender.track?.kind)
-      if (replacement) sender.replaceTrack(replacement)
-    })
-  }
-
-  // ─── Lifecycle ────────────────────────────────────────────────────────────────
-
-  /**
-   * Close all connections and reset all state.
-   */
-  stopAllStreams() {
-    this.peerConnections.forEach((pc, peerId) => {
-      pc.getSenders().forEach(sender => { try { sender.track?.stop() } catch (_) { } })
-      try { pc.close() } catch (_) { }
-    })
-    this.peerConnections.clear()
-    this.peerStreams.clear()
-    this.iceCandidateQueues.clear()
-    this.remoteDescSet.clear()
-    console.log('[WebRTC] 🧹 All streams and connections stopped')
-  }
-
-  /**
-   * Close only the share-related connections (all peers except self).
-   * Used when stopping a screen share without destroying the manager.
-   */
-  stopShareConnections(selfUid) {
-    for (const [peerId] of this.peerConnections) {
-      if (peerId !== selfUid) this._resetPeer(peerId)
+  close(peerId) {
+    const entry = this.peers.get(peerId)
+    if (entry?.pc) {
+      try { entry.pc.close() } catch (_) { }
     }
-    console.log('[WebRTC] 🧹 Share connections stopped')
+    this.peers.delete(peerId)
+    console.log(`[WEBRTC] 🗑️ Closed connection to ${peerId}`)
+  }
+
+  /**
+   * Close all connections except `excludeId` (pass the host's UID to exclude self).
+   */
+  closeAll(excludeId) {
+    for (const [peerId] of this.peers) {
+      if (peerId !== excludeId) this.close(peerId)
+    }
+  }
+
+  /**
+   * Fully destroy all connections (called on component unmount).
+   */
+  destroy() {
+    for (const [, entry] of this.peers) {
+      if (entry?.pc) try { entry.pc.close() } catch (_) { }
+    }
+    this.peers.clear()
+    this.events = {}
+    console.log('[WEBRTC] 💥 Destroyed all connections')
   }
 }
 
