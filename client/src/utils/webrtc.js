@@ -44,17 +44,28 @@ export class WebRTCManager {
 
     peerConnection.ontrack = (event) => {
       console.log(`[PC] 🎥 Received track from ${peerId} (type: ${event.track.kind})`)
-      if (event.streams && event.streams[0]) {
-        this.emit('remoteStream', event.streams[0], peerId)
-      } else {
-        console.log(`[PC] ⚠️ No stream bundled, creating fallback for ${peerId}`)
-        const stream = new MediaStream([event.track])
-        this.emit('remoteStream', stream, peerId)
+
+      // Get or create a media stream for this peer
+      let stream = this.peerStreams?.get(peerId)
+      if (!stream) {
+        stream = new MediaStream()
+        if (!this.peerStreams) this.peerStreams = new Map()
+        this.peerStreams.set(peerId, stream)
       }
+
+      // Add the track to the stream
+      stream.addTrack(event.track)
+
+      // Emit the stream (UI will update on every track but keep same stream ref)
+      this.emit('remoteStream', stream, peerId)
     }
 
     peerConnection.onconnectionstatechange = () => {
       console.log(`[PC] 🌐 Connection state with ${peerId}: ${peerConnection.connectionState}`)
+      if (peerConnection.connectionState === 'closed' || peerConnection.connectionState === 'failed') {
+        this.peerConnections.delete(peerId)
+        if (this.peerStreams) this.peerStreams.delete(peerId)
+      }
     }
 
     peerConnection.oniceconnectionstatechange = () => {
@@ -130,8 +141,16 @@ export class WebRTCManager {
    */
   async handleOffer(peerId, offer) {
     let peerConnection = this.peerConnections.get(peerId)
+
+    // If connection exists but is CLOSED, we MUST recreate it
+    if (peerConnection && (peerConnection.connectionState === 'closed' || peerConnection.signalingState === 'closed')) {
+      console.log(`[Manager] Recreating closed connection for ${peerId}`)
+      this.closePeerConnection(peerId)
+      peerConnection = null
+    }
+
     if (!peerConnection) {
-      // If we don't have a PC yet for this peer (e.g. we are receiver), create one
+      console.log(`[Manager] Creating new connection for incoming offer from ${peerId}`)
       peerConnection = await this.createPeerConnection(peerId)
     }
 

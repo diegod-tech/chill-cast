@@ -156,6 +156,12 @@ export default function WatchRoomPage() {
         console.log(`User ${senderUserId} stopped screen sharing.`)
         setRemoteStream(null)
         setIsScreenSharing(false)
+
+        // Receiver-side cleanup: Close the connection to the presenter
+        if (webrtcRef.current && senderUserId !== user.uid) {
+          console.log(`🧹 WEBRTC: Closing connection to former presenter ${senderUserId}`)
+          webrtcRef.current.closePeerConnection(senderUserId)
+        }
       })
 
       webrtcRef.current.on('remoteStream', (stream, peerId) => {
@@ -313,15 +319,32 @@ export default function WatchRoomPage() {
           if (!webrtcRef.current) return;
 
           console.log(`🤝 Initiating share connection with ${p.name}`)
-          const pc = await webrtcRef.current.createPeerConnection(p.userId)
-          stream.getTracks().forEach(track => pc.addTrack(track, stream))
+          try {
+            const pc = await webrtcRef.current.createPeerConnection(p.userId)
 
-          const offer = await webrtcRef.current.createOffer(p.userId)
-          socketRef.current.emit('webrtc_offer', {
-            targetUserId: p.userId,
-            offer,
-            roomId
-          })
+            // Clear existing senders if any (to avoid duplicate tracks on restart)
+            pc.getSenders().forEach(sender => {
+              if (sender.track) {
+                console.log(`[PC] Removing stale track from ${p.name}`);
+                pc.removeTrack(sender);
+              }
+            });
+
+            // Add new tracks
+            stream.getTracks().forEach(track => {
+              console.log(`[PC] Adding ${track.kind} track for ${p.name}`);
+              pc.addTrack(track, stream);
+            });
+
+            const offer = await webrtcRef.current.createOffer(p.userId)
+            socketRef.current.emit('webrtc_offer', {
+              targetUserId: p.userId,
+              offer,
+              roomId
+            })
+          } catch (err) {
+            console.error(`❌ WEBRTC: Failed to initiate connection with ${p.name}`, err);
+          }
         })
 
         // Local preview
