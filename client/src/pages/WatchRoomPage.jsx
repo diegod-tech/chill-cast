@@ -4,11 +4,12 @@ import { Send, Share2, Settings, Volume2, Maximize, Monitor, MonitorOff } from '
 import { useRoomStore, useAuthStore } from '../utils/store'
 import { initSocket, disconnectSocket } from '../utils/socket'
 import { formatTime } from '../utils/helpers'
-import { db, auth } from '../config/firebase'
+import { db } from '../config/firebase'
 import { collection, query, orderBy, limit, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore'
 import WebRTCManager from '../utils/webrtc'
 import api from '../utils/api'
 import ErrorBoundary from '../components/ErrorBoundary'
+import YouTubePlayer from '../components/YouTubePlayer'
 
 // Helper to extract YouTube ID
 const extractVideoId = (url) => {
@@ -103,6 +104,11 @@ export default function WatchRoomPage() {
       setLocalPlaybackState(prev => ({ ...prev, ...state }))
     })
 
+    // ── Real-time chat via Socket.IO ─────────────────────────────────────────
+    socket.on('chatMessage', (message) => {
+      setMessages(prev => [...prev, message])
+    })
+
     // ── WebRTC signaling ──────────────────────────────────────────────────────
     // Participant receives offer from host → create answer
     socket.on('webrtc_offer', async ({ senderUserId, offer }) => {
@@ -192,24 +198,7 @@ export default function WatchRoomPage() {
     }
   }, [roomId, user?.uid]) // minimal deps — callbacks use refs
 
-  // Firestore Chat Listener
-  useEffect(() => {
-    const q = query(
-      collection(db, 'rooms', roomId, 'messages'),
-      orderBy('createdAt', 'asc'),
-      limit(100)
-    )
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = []
-      snapshot.forEach((doc) => {
-        msgs.push({ id: doc.id, ...doc.data() })
-      })
-      setMessages(msgs)
-    })
-
-    return () => unsubscribe()
-  }, [roomId, setMessages])
+  // No Firestore listener needed — chat is now via Socket.IO
 
   // Attach remote stream to video element and handle autoplay
   useEffect(() => {
@@ -242,22 +231,9 @@ export default function WatchRoomPage() {
 
   const handleSendMessage = async (e) => {
     e.preventDefault()
-    if (!currentMessage.trim() || !user) return
-
-    try {
-      await addDoc(collection(db, 'rooms', roomId, 'messages'), {
-        roomId,
-        senderId: user.uid,
-        senderName: user.name || user.email,
-        senderAvatar: user.picture || '',
-        content: currentMessage,
-        messageType: 'text',
-        createdAt: serverTimestamp() // Use server timestamp
-      })
-      setCurrentMessage('')
-    } catch (error) {
-      console.error("Error sending message", error)
-    }
+    if (!currentMessage.trim() || !socketRef.current) return
+    socketRef.current.emit('sendChatMessage', { roomId, content: currentMessage.trim() })
+    setCurrentMessage('')
   }
 
   /**
@@ -343,14 +319,22 @@ export default function WatchRoomPage() {
   }
 
   const handleTogglePlayback = () => {
-    if (room?.hostId !== user?.uid) return
     const newState = {
       ...playbackState,
       isPlaying: !playbackState.isPlaying,
-      currentTime: videoRef.current ? videoRef.current.currentTime : playbackState.currentTime
     }
     setLocalPlaybackState(newState)
     socketRef.current.emit('syncPlayback', { roomId, state: newState })
+  }
+
+  /**
+   * Called by the YouTubePlayer when the user clicks play/pause inside the embed.
+   * We broadcast the change to all other users so they stay in sync.
+   */
+  const handlePlayerStateChange = ({ isPlaying, currentTime }) => {
+    const newState = { ...playbackState, isPlaying, currentTime }
+    setLocalPlaybackState(newState)
+    socketRef.current?.emit('syncPlayback', { roomId, state: newState })
   }
 
   const updateService = (service) => {
@@ -443,14 +427,11 @@ export default function WatchRoomPage() {
                       </div>
                     ) : (
                       playbackState.videoId ? (
-                        <iframe
-                          width="100%"
-                          height="100%"
-                          src={`https://www.youtube.com/embed/${playbackState.videoId}?autoplay=${playbackState.isPlaying ? 1 : 0}&start=${Math.floor(playbackState.currentTime)}`}
-                          title="Video Player"
-                          frameBorder="0"
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                          allowFullScreen
+                        <YouTubePlayer
+                          videoId={playbackState.videoId}
+                          isPlaying={playbackState.isPlaying}
+                          currentTime={playbackState.currentTime}
+                          onStateChange={handlePlayerStateChange}
                         />
                       ) : (
                         <div className="text-white flex flex-col items-center">
@@ -570,7 +551,13 @@ export default function WatchRoomPage() {
                     <div key={msg.id} className="text-sm">
                       <div className="flex items-baseline justify-between">
                         <p className="font-semibold text-accent-400">{msg.senderName}</p>
-                        <span className="text-[10px] text-gray-500">{msg.createdAt?.seconds ? new Date(msg.createdAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                        <span className="text-[10px] text-gray-500">
+                          {msg.timestamp
+                            ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            : msg.createdAt?.seconds
+                              ? new Date(msg.createdAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                              : ''}
+                        </span>
                       </div>
                       <p className="text-gray-300 break-words">{msg.content}</p>
                     </div>

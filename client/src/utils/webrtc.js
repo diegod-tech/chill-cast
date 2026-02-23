@@ -223,7 +223,7 @@ export class WebRTCManager {
   async getScreenStream() {
     return navigator.mediaDevices.getDisplayMedia({
       video: { cursor: 'always' },
-      audio: false, // audio:true can cause permission errors on some systems
+      audio: true, // Enables system audio — Chrome shows "Share system audio" checkbox
     })
   }
 

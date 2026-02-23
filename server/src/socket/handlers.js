@@ -244,6 +244,22 @@ export const initializeSocket = (io) => {
       })
     })
 
+    /**
+     * Real-time chat message — broadcast to everyone in the room
+     */
+    socket.on('sendChatMessage', ({ roomId, content }) => {
+      if (!content?.trim()) return
+      const message = {
+        id: `${uid}-${Date.now()}`,
+        senderId: uid,
+        senderName: name,
+        senderAvatar: picture || '',
+        content: content.trim(),
+        timestamp: new Date().toISOString(),
+      }
+      io.to(roomId).emit('chatMessage', message)
+    })
+
     // socket.join(uid) is called at the TOP of this handler (see above)
 
     /**
