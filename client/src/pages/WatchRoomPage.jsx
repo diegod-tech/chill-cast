@@ -198,12 +198,23 @@ export default function WatchRoomPage() {
     const voiceRtc = new WebRTCManager()
     voiceRtcRef.current = voiceRtc
 
-    // When we receive a voice offer, create answer and play remote audio
+    // When we receive a voice offer, get our own mic (if not already on)
+    // and pass it into handleOffer so voice flows both ways
     socket.on('voice_offer', async ({ senderUserId, offer }) => {
       if (!voiceRtcRef.current) return
       console.log(`🎤 Voice offer from ${senderUserId}`)
       try {
-        const answer = await voiceRtcRef.current.handleOffer(senderUserId, offer)
+        // Auto-activate mic when receiving a voice call
+        if (!micStreamRef.current) {
+          try {
+            const myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            micStreamRef.current = myStream
+            setIsMicOn(true)
+          } catch (micErr) {
+            console.warn('🎤 Mic permission denied on auto-activate:', micErr.message)
+          }
+        }
+        const answer = await voiceRtcRef.current.handleOffer(senderUserId, offer, micStreamRef.current)
         socket.emit('voice_answer', { targetUserId: senderUserId, answer, roomId })
       } catch (e) { console.error('voice_offer error:', e) }
     })
@@ -623,8 +634,8 @@ export default function WatchRoomPage() {
                         onClick={handleMicToggle}
                         title={isMicOn ? 'Mute mic' : 'Unmute mic'}
                         className={`p-2 rounded transition flex items-center gap-1 text-sm font-medium ${isMicOn
-                            ? 'bg-green-600 hover:bg-green-700 text-white'
-                            : 'bg-red-600 hover:bg-red-700 text-white'
+                          ? 'bg-green-600 hover:bg-green-700 text-white'
+                          : 'bg-red-600 hover:bg-red-700 text-white'
                           }`}
                       >
                         {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}

@@ -192,8 +192,11 @@ export class WebRTCManager {
 
   /**
    * PARTICIPANT: Handle incoming offer from `peerId`, return answer SDP.
+   * @param {string} peerId
+   * @param {RTCSessionDescriptionInit} offerSdp
+   * @param {MediaStream} [localStream] - Optional local stream to add (e.g. mic)
    */
-  async handleOffer(peerId, offerSdp) {
+  async handleOffer(peerId, offerSdp, localStream) {
     console.log(`[WEBRTC] 📥 Handling offer from ${peerId}`)
 
     // Check if we have a stub entry with pre-queued candidates
@@ -209,6 +212,19 @@ export class WebRTCManager {
     }
 
     const { pc } = entry
+
+    // If we have a local stream (e.g. mic), add its tracks so the caller hears us
+    if (localStream) {
+      localStream.getTracks().forEach(track => {
+        // Avoid adding duplicate tracks
+        const senders = pc.getSenders()
+        if (!senders.find(s => s.track?.id === track.id)) {
+          pc.addTrack(track, localStream)
+          console.log(`[WEBRTC] ➕ Added local ${track.kind} track for ${peerId}`)
+        }
+      })
+    }
+
     await pc.setRemoteDescription(new RTCSessionDescription(offerSdp))
     entry.remoteSet = true
     await this._flushCandidates(peerId)
