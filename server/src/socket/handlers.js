@@ -308,6 +308,21 @@ export const initializeSocket = (io) => {
       })
     })
 
+    // ── Voice chat relay (separate from screen share signaling) ───────────────
+    socket.on('voice_offer', ({ targetUserId, offer }) => {
+      io.to(targetUserId).emit('voice_offer', { senderUserId: uid, offer })
+    })
+    socket.on('voice_answer', ({ targetUserId, answer }) => {
+      io.to(targetUserId).emit('voice_answer', { senderUserId: uid, answer })
+    })
+    socket.on('voice_ice', ({ targetUserId, candidate }) => {
+      io.to(targetUserId).emit('voice_ice', { senderUserId: uid, candidate })
+    })
+    // Notify others that someone toggled their mic
+    socket.on('micStateChanged', ({ roomId, isMicOn }) => {
+      socket.to(roomId).emit('peerMicStateChanged', { userId: uid, isMicOn })
+    })
+
     socket.on('stopScreenShare', async (data) => {
       const { roomId } = data
 

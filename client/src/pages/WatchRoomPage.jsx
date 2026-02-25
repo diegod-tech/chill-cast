@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { Send, Share2, Settings, Volume2, Maximize, Monitor, MonitorOff } from 'lucide-react'
+import { Send, Share2, Settings, Volume2, Maximize, Monitor, MonitorOff, Mic, MicOff } from 'lucide-react'
 import { useRoomStore, useAuthStore } from '../utils/store'
 import { initSocket, disconnectSocket } from '../utils/socket'
 import { formatTime } from '../utils/helpers'
@@ -34,12 +34,18 @@ export default function WatchRoomPage() {
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [remoteStream, setRemoteStream] = useState(null)
   const [videoUrlInput, setVideoUrlInput] = useState('')
+  const [isMicOn, setIsMicOn] = useState(false)
 
   const socketRef = useRef(null)
   const webrtcRef = useRef(null)
+  const voiceRtcRef = useRef(null)      // separate WebRTC manager for voice
+  const micStreamRef = useRef(null)     // local mic MediaStream
+  const remoteAudiosRef = useRef({})    // peerId -> <audio> DOM elements
   const videoRef = useRef(null)
   const messagesEndRef = useRef(null)
-  const localStreamRef = useRef(null) // NEW: Store local share stream
+  const localStreamRef = useRef(null)
+  const videoContainerRef = useRef(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -106,7 +112,7 @@ export default function WatchRoomPage() {
 
     // ── Real-time chat via Socket.IO ─────────────────────────────────────────
     socket.on('chatMessage', (message) => {
-      setMessages(prev => [...prev, message])
+      addMessage(message)  // uses store's addMessage which correctly appends
     })
 
     // ── WebRTC signaling ──────────────────────────────────────────────────────
@@ -187,11 +193,64 @@ export default function WatchRoomPage() {
       socket.emit('webrtc_ice_candidate', { targetUserId: peerId, candidate, roomId })
     })
 
+    // ── Voice chat signaling ───────────────────────────────────────────────────
+    // Init a second WebRTCManager just for audio peer connections
+    const voiceRtc = new WebRTCManager()
+    voiceRtcRef.current = voiceRtc
+
+    // When we receive a voice offer, create answer and play remote audio
+    socket.on('voice_offer', async ({ senderUserId, offer }) => {
+      if (!voiceRtcRef.current) return
+      console.log(`🎤 Voice offer from ${senderUserId}`)
+      try {
+        const answer = await voiceRtcRef.current.handleOffer(senderUserId, offer)
+        socket.emit('voice_answer', { targetUserId: senderUserId, answer, roomId })
+      } catch (e) { console.error('voice_offer error:', e) }
+    })
+
+    socket.on('voice_answer', async ({ senderUserId, answer }) => {
+      if (!voiceRtcRef.current) return
+      try {
+        await voiceRtcRef.current.handleAnswer(senderUserId, answer)
+      } catch (e) { console.error('voice_answer error:', e) }
+    })
+
+    socket.on('voice_ice', async ({ senderUserId, candidate }) => {
+      if (!voiceRtcRef.current) return
+      try {
+        await voiceRtcRef.current.addIceCandidate(senderUserId, candidate)
+      } catch (e) { console.error('voice_ice error:', e) }
+    })
+
+    // When a remote audio track arrives, play it through a hidden <audio> element
+    voiceRtc.on('remoteStream', (stream, peerId) => {
+      console.log(`🎤 Remote voice from ${peerId}`)
+      let audio = remoteAudiosRef.current[peerId]
+      if (!audio) {
+        audio = document.createElement('audio')
+        audio.autoplay = true
+        audio.style.display = 'none'
+        document.body.appendChild(audio)
+        remoteAudiosRef.current[peerId] = audio
+      }
+      audio.srcObject = stream
+    })
+
+    voiceRtc.on('icecandidate', (candidate, peerId) => {
+      socket.emit('voice_ice', { targetUserId: peerId, candidate, roomId })
+    })
+
     // ── Cleanup ───────────────────────────────────────────────────────────────
     return () => {
       console.log('🔌 Disconnecting socket, cleaning WebRTC')
       disconnectSocket()
       webrtcRef.current?.destroy()
+      voiceRtcRef.current?.destroy()
+      micStreamRef.current?.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+      // Remove all remote audio elements
+      Object.values(remoteAudiosRef.current).forEach(el => el.remove())
+      remoteAudiosRef.current = {}
       localStreamRef.current?.getTracks().forEach(t => t.stop())
       localStreamRef.current = null
       useRoomStore.getState().clearRoom?.()
@@ -200,16 +259,15 @@ export default function WatchRoomPage() {
 
   // No Firestore listener needed — chat is now via Socket.IO
 
-  // Attach remote stream to video element and handle autoplay
+  // Attach remote stream to video element
   useEffect(() => {
     if (remoteStream && videoRef.current) {
-      console.log("📺 Syncing stream to video element...")
+      console.log('📺 Syncing stream to video element...')
       videoRef.current.srcObject = remoteStream
-
       const playPromise = videoRef.current.play()
       if (playPromise !== undefined) {
         playPromise.catch(error => {
-          console.warn("⚠️ Autoplay blocked or failed:", error)
+          console.warn('⚠️ Autoplay blocked or failed:', error)
         })
       }
     }
@@ -343,6 +401,53 @@ export default function WatchRoomPage() {
     socketRef.current.emit('syncPlayback', { roomId, state: newState })
   }
 
+  /**
+   * handleMicToggle — Google Meet-style mic toggle
+   *
+   * First call: request mic permission → create voice WebRTC offers to all participants
+   * Subsequent calls: just toggle audioTrack.enabled (no new connections)
+   */
+  const handleMicToggle = async () => {
+    const socket = socketRef.current
+    const voiceRtc = voiceRtcRef.current
+    if (!socket || !voiceRtc) return
+
+    // If mic stream already exists, just toggle mute
+    if (micStreamRef.current) {
+      const audioTrack = micStreamRef.current.getAudioTracks()[0]
+      if (audioTrack) {
+        const newMicOn = !audioTrack.enabled
+        audioTrack.enabled = newMicOn
+        setIsMicOn(newMicOn)
+        socket.emit('micStateChanged', { roomId, isMicOn: newMicOn })
+      }
+      return
+    }
+
+    // First activation — request mic permission
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      micStreamRef.current = stream
+
+      const otherParticipants = participants.filter(p => p.userId !== user?.uid)
+      console.log(`🎤 Opening voice to ${otherParticipants.length} participant(s)`)
+
+      for (const p of otherParticipants) {
+        try {
+          const offer = await voiceRtc.createOffer(p.userId, stream)
+          socket.emit('voice_offer', { targetUserId: p.userId, offer, roomId })
+        } catch (err) {
+          console.error(`Voice offer error to ${p.name}:`, err)
+        }
+      }
+
+      setIsMicOn(true)
+      socket.emit('micStateChanged', { roomId, isMicOn: true })
+    } catch (err) {
+      console.warn('Mic permission denied:', err.message)
+    }
+  }
+
   const handleVideoChange = (e) => {
     e.preventDefault()
     const videoId = extractVideoId(videoUrlInput)
@@ -371,6 +476,23 @@ export default function WatchRoomPage() {
     })
   }
 
+  const handleFullscreen = () => {
+    const el = videoContainerRef.current
+    if (!el) return
+    if (!document.fullscreenElement) {
+      el.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => { })
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => { })
+    }
+  }
+
+  // Sync isFullscreen state when user presses Escape
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
   if (!room) {
     return (
       <div className="min-h-screen bg-dark p-6 flex flex-col items-center justify-center text-white">
@@ -396,7 +518,7 @@ export default function WatchRoomPage() {
           <div className="grid lg:grid-cols-3 gap-6">
             {/* Left Column: Video Player */}
             <div className="lg:col-span-2">
-              <div className="bg-dark-secondary rounded-lg overflow-hidden mb-6">
+              <div ref={videoContainerRef} className="bg-dark-secondary rounded-lg overflow-hidden mb-6">
                 <div className="aspect-video bg-black flex items-center justify-center relative">
                   {playbackState.service === 'screenshare' ? (
                     remoteStream ? (
@@ -496,6 +618,17 @@ export default function WatchRoomPage() {
                       <button className="p-2 hover:bg-dark-tertiary rounded transition flex items-center gap-2">
                         <Volume2 className="w-5 h-5" />
                       </button>
+                      {/* Mic button — Google Meet style */}
+                      <button
+                        onClick={handleMicToggle}
+                        title={isMicOn ? 'Mute mic' : 'Unmute mic'}
+                        className={`p-2 rounded transition flex items-center gap-1 text-sm font-medium ${isMicOn
+                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                            : 'bg-red-600 hover:bg-red-700 text-white'
+                          }`}
+                      >
+                        {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                      </button>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -505,7 +638,11 @@ export default function WatchRoomPage() {
                         {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
                         {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
                       </button>
-                      <button className="p-2 hover:bg-dark-tertiary rounded transition">
+                      <button
+                        onClick={handleFullscreen}
+                        className="p-2 hover:bg-dark-tertiary rounded transition"
+                        title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                      >
                         <Maximize className="w-5 h-5" />
                       </button>
                     </div>

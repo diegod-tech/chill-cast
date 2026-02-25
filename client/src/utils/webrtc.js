@@ -9,12 +9,43 @@
  * the moment setRemoteDescription succeeds.
  */
 
+/**
+ * ICE servers for WebRTC NAT traversal.
+ *
+ * STUN: Helps peers discover their public IP (needed for initial handshake).
+ * TURN: Relays media traffic when direct P2P fails (required for cross-network).
+ *
+ * Without TURN, screen share works only on the same local network.
+ * With TURN, it works across any network (mobile, corporate, VPN, etc.).
+ */
 const ICE_SERVERS = [
+  // Google STUN servers
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
+
+  // Free TURN servers from open-relay.metered.ca
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  // Additional free TURN (numb.viagenie.ca)
+  {
+    urls: 'turn:numb.viagenie.ca',
+    username: 'webrtc@live.com',
+    credential: 'muazkh',
+  },
 ]
 
 export class WebRTCManager {
