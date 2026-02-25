@@ -53,6 +53,43 @@ app.get('/health', (req, res) => {
 })
 
 /**
+ * ICE servers for WebRTC — provides STUN + TURN configs to clients.
+ * If METERED_API_KEY env var is set, fetches fresh TURN credentials
+ * from Metered's free API (500GB/month free). Otherwise returns
+ * a reasonable set of public STUN/TURN servers.
+ */
+app.get('/api/ice-servers', async (req, res) => {
+  try {
+    const apiKey = process.env.METERED_API_KEY
+    if (apiKey) {
+      // Fetch dynamic TURN credentials from Metered
+      const response = await fetch(
+        `https://chillcast.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`
+      )
+      if (response.ok) {
+        const iceServers = await response.json()
+        return res.json(iceServers)
+      }
+    }
+
+    // Fallback: Google STUN + a set of reliable free TURN servers
+    return res.json([
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+    ])
+  } catch (err) {
+    console.error('ICE servers fetch error:', err)
+    res.json([
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ])
+  }
+})
+
+/**
  * Initialize Socket.IO
  */
 initializeSocket(io)

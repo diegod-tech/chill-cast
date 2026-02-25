@@ -10,42 +10,13 @@
  */
 
 /**
- * ICE servers for WebRTC NAT traversal.
- *
- * STUN: Helps peers discover their public IP (needed for initial handshake).
- * TURN: Relays media traffic when direct P2P fails (required for cross-network).
- *
- * Without TURN, screen share works only on the same local network.
- * With TURN, it works across any network (mobile, corporate, VPN, etc.).
+ * Fallback STUN-only config (works on same network, not across NATs).
+ * The constructor fetches proper TURN credentials from the server.
  */
-const ICE_SERVERS = [
-  // Google STUN servers
+const FALLBACK_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
-
-  // Free TURN servers from open-relay.metered.ca
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  // Additional free TURN (numb.viagenie.ca)
-  {
-    urls: 'turn:numb.viagenie.ca',
-    username: 'webrtc@live.com',
-    credential: 'muazkh',
-  },
 ]
 
 export class WebRTCManager {
@@ -53,6 +24,27 @@ export class WebRTCManager {
     /** @type {Map<string, { pc: RTCPeerConnection, pendingCandidates: RTCIceCandidateInit[], remoteSet: boolean }>} */
     this.peers = new Map()
     this.events = {}
+    this.iceServers = FALLBACK_ICE_SERVERS  // replaced once fetch completes
+
+    // Fetch fresh TURN credentials from server
+    this._fetchIceServers()
+  }
+
+  async _fetchIceServers() {
+    try {
+      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
+      const baseUrl = API_BASE.replace(/\/api$/, '')
+      const res = await fetch(`${baseUrl}/api/ice-servers`)
+      if (res.ok) {
+        const servers = await res.json()
+        if (Array.isArray(servers) && servers.length > 0) {
+          this.iceServers = servers
+          console.log('[WEBRTC] ✅ Fetched ICE servers:', servers.length, 'entries')
+        }
+      }
+    } catch (err) {
+      console.warn('[WEBRTC] ⚠️ Could not fetch ICE servers, using STUN fallback:', err.message)
+    }
   }
 
   // ─── Event Emitter ────────────────────────────────────────────────────────────
@@ -94,7 +86,7 @@ export class WebRTCManager {
   /** Always creates a BRAND NEW peer entry. */
   _createPeer(peerId) {
     console.log(`[WEBRTC] ➕ Creating RTCPeerConnection for ${peerId}`)
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers })
 
     /** @type {{ pc: RTCPeerConnection, pendingCandidates: RTCIceCandidateInit[], remoteSet: boolean }} */
     const entry = { pc, pendingCandidates: [], remoteSet: false }
