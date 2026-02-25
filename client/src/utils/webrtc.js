@@ -10,13 +10,29 @@
  */
 
 /**
- * Fallback STUN-only config (works on same network, not across NATs).
- * The constructor fetches proper TURN credentials from the server.
+ * ICE servers for WebRTC NAT traversal.
+ *
+ * STUN: Discovers public IP (fast, free, Google-hosted).
+ * TURN: Relays media traffic when direct P2P fails (ExpressTURN, 1000 GB/mo free).
+ *
+ * Multiple ports & transports ensure connectivity even behind strict firewalls.
  */
-const FALLBACK_ICE_SERVERS = [
+const ICE_SERVERS = [
+  // Google STUN servers
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
+
+  // ExpressTURN — standard port (UDP + TCP)
+  {
+    urls: 'turn:relay1.expressturn.com:3478',
+    username: '000000002087359777',
+    credential: 'bSiIwTQ3bekjGkcULsVGW7JBk5I=',
+  },
+  {
+    urls: 'turn:relay1.expressturn.com:3478?transport=tcp',
+    username: '000000002087359777',
+    credential: 'bSiIwTQ3bekjGkcULsVGW7JBk5I=',
+  },
 ]
 
 export class WebRTCManager {
@@ -24,27 +40,7 @@ export class WebRTCManager {
     /** @type {Map<string, { pc: RTCPeerConnection, pendingCandidates: RTCIceCandidateInit[], remoteSet: boolean }>} */
     this.peers = new Map()
     this.events = {}
-    this.iceServers = FALLBACK_ICE_SERVERS  // replaced once fetch completes
-
-    // Fetch fresh TURN credentials from server
-    this._fetchIceServers()
-  }
-
-  async _fetchIceServers() {
-    try {
-      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
-      const baseUrl = API_BASE.replace(/\/api$/, '')
-      const res = await fetch(`${baseUrl}/api/ice-servers`)
-      if (res.ok) {
-        const servers = await res.json()
-        if (Array.isArray(servers) && servers.length > 0) {
-          this.iceServers = servers
-          console.log('[WEBRTC] ✅ Fetched ICE servers:', servers.length, 'entries')
-        }
-      }
-    } catch (err) {
-      console.warn('[WEBRTC] ⚠️ Could not fetch ICE servers, using STUN fallback:', err.message)
-    }
+    this.iceServers = ICE_SERVERS
   }
 
   // ─── Event Emitter ────────────────────────────────────────────────────────────
